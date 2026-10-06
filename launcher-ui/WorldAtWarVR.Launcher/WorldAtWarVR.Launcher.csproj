@@ -1,0 +1,136 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>WorldAtWarVR_Launcher</RootNamespace>
+    <AssemblyName>WorldWarVR.Launcher</AssemblyName>
+    <Product>World War VR</Product>
+    <Title>World War VR</Title>
+    <Description>A standalone VR mod for Call of Duty: World at War.</Description>
+    <Version>0.4.0-beta.3</Version>
+    <AssemblyVersion>0.4.0.0</AssemblyVersion>
+    <FileVersion>0.4.0.0</FileVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\WorldAtWarVR-Icon.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <EnableWinAppRunSupport>false</EnableWinAppRunSupport>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\SplashScreen.scale-200.png" />
+    <Content Include="Assets\LockScreenLogo.scale-200.png" />
+    <Content Include="Assets\Square150x150Logo.scale-200.png" />
+    <Content Include="Assets\Square44x44Logo.scale-200.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png" />
+    <Content Include="Assets\Square44x44Logo.targetsize-48_altform-lightunplated.png" />
+    <Content Include="Assets\StoreLogo.png" />
+    <Content Include="Assets\WorldAtWarVR-Icon.ico">
+      <!-- Keep the authored source filename stable while publishing the public
+           product-branded asset name. -->
+      <TargetPath>Assets\WorldWarVR-Icon.ico</TargetPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="Assets\Launcher\LauncherBackground.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="Assets\Wide310x150Logo.scale-200.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+    <ProjectReference Include="WorldAtWarVR.Launcher.Core\WorldAtWarVR.Launcher.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Nested projects are referenced explicitly; their sources and generated
+       obj files must not be globbed into the WinUI application itself. -->
+  <ItemGroup>
+    <Compile Remove="WorldAtWarVR.Launcher.Core\**\*.cs" />
+    <Compile Remove="WorldAtWarVR.Launcher.Core.Tests\**\*.cs" />
+    <Compile Remove="artifacts\**\*.cs" />
+    <Compile Remove="bin\**\*.cs" />
+    <Compile Remove="obj\**\*.cs" />
+    <EmbeddedResource Remove="WorldAtWarVR.Launcher.Core\**\*" />
+    <EmbeddedResource Remove="WorldAtWarVR.Launcher.Core.Tests\**\*" />
+    <EmbeddedResource Remove="artifacts\**\*" />
+    <EmbeddedResource Remove="bin\**\*" />
+    <EmbeddedResource Remove="obj\**\*" />
+    <None Remove="WorldAtWarVR.Launcher.Core\**\*" />
+    <None Remove="WorldAtWarVR.Launcher.Core.Tests\**\*" />
+    <None Remove="artifacts\**\*" />
+    <None Remove="bin\**\*" />
+    <None Remove="obj\**\*" />
+    <Content Remove="WorldAtWarVR.Launcher.Core\bin\**\*" />
+    <Content Remove="WorldAtWarVR.Launcher.Core\obj\**\*" />
+    <Content Remove="WorldAtWarVR.Launcher.Core.Tests\bin\**\*" />
+    <Content Remove="WorldAtWarVR.Launcher.Core.Tests\obj\**\*" />
+    <Content Remove="artifacts\**\*" />
+    <Content Remove="bin\**\*" />
+    <Content Remove="obj\**\*" />
+  </ItemGroup>
+
+  <!--
+    Defining the "Msix" ProjectCapability here allows the Single-project MSIX Packaging
+    Tools extension to be activated for this project even if the Windows App SDK Nuget
+    package has not yet been restored.
+  -->
+  <ItemGroup Condition="'$(DisableMsixProjectCapabilityAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
+    <ProjectCapability Include="Msix" />
+  </ItemGroup>
+
+  <!--
+    Microsoft.Windows.SDK.BuildTools.WinApp adds first-class support for
+    `dotnet run` on packaged WinUI apps: it hooks the .NET CLI Run target to
+    register a debug identity via the winapp CLI and launch the app with
+    package identity (AUMID).
+    Set <EnableWinAppRunSupport>false</EnableWinAppRunSupport> in a
+    <PropertyGroup> above to opt out.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2526" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260317003" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.5.0" />
+  </ItemGroup>
+
+  <!--
+    Defining the "HasPackageAndPublishMenuAddedByProject" property here allows the Solution
+    Explorer "Package and Publish" context menu entry to be enabled for this project even if
+    the Windows App SDK Nuget package has not yet been restored.
+  -->
+  <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
+    <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
+  </PropertyGroup>
+
+  <!-- Publish Properties -->
+  <PropertyGroup>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishSingleFile>false</PublishSingleFile>
+  </PropertyGroup>
+
+  <!-- The public product apphost is branded without renaming the managed
+       assembly. The managed identity retains its .Launcher suffix so the
+       adjacent native WorldWarVR.dll has an unambiguous public filename. -->
+  <Target Name="BrandPublishedAppHost" AfterTargets="Publish">
+    <Move
+      SourceFiles="$(PublishDir)WorldWarVR.Launcher.exe"
+      DestinationFiles="$(PublishDir)WorldWarVR.exe"
+      Condition="Exists('$(PublishDir)WorldWarVR.Launcher.exe')" />
+    <Move
+      SourceFiles="$(PublishDir)WorldWarVR.Launcher.pri"
+      DestinationFiles="$(PublishDir)WorldWarVR.pri"
+      Condition="Exists('$(PublishDir)WorldWarVR.Launcher.pri')" />
+  </Target>
+</Project>

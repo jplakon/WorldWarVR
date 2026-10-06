@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "World War VR (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "World War VR (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
