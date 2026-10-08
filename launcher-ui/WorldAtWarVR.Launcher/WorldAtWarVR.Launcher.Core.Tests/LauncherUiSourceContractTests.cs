@@ -86,6 +86,76 @@ public sealed class LauncherUiSourceContractTests
     }
 
     [TestMethod]
+    public void StartupSourceContract_DisablesEditingUntilSettingsAreAppliedOnce()
+    {
+        // This checks the authored startup contract, not executed WinUI events.
+        var document = LoadXaml("MainPage.xaml");
+        var root = document.Root!;
+        Assert.AreEqual("Page", root.Name.LocalName);
+        AssertAttribute(root, "IsEnabled", "False");
+        foreach (var name in new[]
+                 {
+                     "GamePathTextBox", "MainMenuRadio", "MultiplayerRadio",
+                     "AutomaticReloadCheckBox", "ButtonGrenadesCheckBox",
+                     "SmoothTurningCheckBox", "LaunchButton",
+                 })
+        {
+            Assert.IsTrue(RequiredElementByName(document, name).Ancestors().Contains(root),
+                $"{name} must inherit the startup editing gate.");
+        }
+
+        var source = ReadLauncherFile("MainPage.xaml.cs");
+        var begin = source.IndexOf("private async void MainPage_Loaded", StringComparison.Ordinal);
+        var end = source.IndexOf("private void MainPage_Unloaded", begin, StringComparison.Ordinal);
+        var startup = source[begin..end];
+        AssertRegex(startup,
+            @"if\s*\(\s*_initializationStarted\s*\)\s*\{\s*return\s*;\s*\}\s*_initializationStarted\s*=\s*true\s*;",
+            "Repeated Loaded events must not restart hydration or overwrite user choices.");
+        AssertRegex(source, @"private\s+bool\s+_initializing\s*=\s*true\s*;",
+            "Control events must remain suppressed while settings are applied.");
+
+        var guard = startup.IndexOf("_initializationStarted = true;", StringComparison.Ordinal);
+        var load = startup.IndexOf("await _settingsStore.LoadAsync()", StringComparison.Ordinal);
+        var apply = startup.IndexOf("ApplySettingsToControls();", StringComparison.Ordinal);
+        var events = startup.IndexOf("_initializing = false;", StringComparison.Ordinal);
+        var enable = startup.IndexOf("this.IsEnabled = true;", StringComparison.Ordinal);
+        Assert.IsTrue(guard >= 0 && load > guard && apply > load && events > apply && enable > events,
+            "Claim initialization before awaiting, apply all settings, then enable events and editing.");
+        Assert.AreEqual(1, Regex.Matches(source, @"this\.IsEnabled\s*=\s*true\s*;").Count,
+            "Startup must be the only path that unlocks editing.");
+        Assert.AreEqual(1, Regex.Matches(source, @"_initializing\s*=\s*false\s*;").Count,
+            "No other path may unsuppress settings events before hydration completes.");
+    }
+
+    [TestMethod]
+    public void StartupSourceContract_FailedHydrationReturnsBeforeUnlockingOrSaving()
+    {
+        // The failure branch is inspected as source; this is not a UI execution test.
+        var source = ReadLauncherFile("MainPage.xaml.cs");
+        var begin = source.IndexOf("private async void MainPage_Loaded", StringComparison.Ordinal);
+        var end = source.IndexOf("private void MainPage_Unloaded", begin, StringComparison.Ordinal);
+        var startup = source[begin..end];
+        var protectedStart = startup.IndexOf("try", StringComparison.Ordinal);
+        var load = startup.IndexOf("await _settingsStore.LoadAsync()", StringComparison.Ordinal);
+        var apply = startup.IndexOf("ApplySettingsToControls();", StringComparison.Ordinal);
+        var catchStart = startup.IndexOf("catch (Exception exception)", StringComparison.Ordinal);
+        var error = startup.IndexOf("ShowActivityError(", catchStart, StringComparison.Ordinal);
+        var failureReturn = startup.IndexOf("return;", catchStart, StringComparison.Ordinal);
+        var unlock = startup.IndexOf("_initializing = false;", StringComparison.Ordinal);
+        Assert.IsTrue(protectedStart >= 0 && load > protectedStart && apply > load &&
+            catchStart > apply && error > catchStart && failureReturn > error && unlock > failureReturn,
+            "A failed hydration must report an error and return before enabling editing.");
+        var failure = startup[catchStart..unlock];
+        Assert.IsFalse(failure.Contains("this.IsEnabled = true", StringComparison.Ordinal));
+        Assert.IsFalse(failure.Contains("SaveSettings", StringComparison.Ordinal));
+        StringAssert.Contains(startup, "Close and reopen it to try again.");
+        StringAssert.Contains(startup, "Your settings have not been saved.");
+        var save = startup.IndexOf("await SaveSettingsQuietlyAsync();", StringComparison.Ordinal);
+        Assert.IsTrue(failureReturn >= 0 && save > failureReturn,
+            "Startup must not save a partially hydrated set of preferences.");
+    }
+
+    [TestMethod]
     public void BrowseButton_RecoversWhenTheWindowsFolderPickerFails()
     {
         var source = ReadLauncherFile("MainPage.xaml.cs");
@@ -145,7 +215,7 @@ public sealed class LauncherUiSourceContractTests
         StringAssert.Contains(source, "AutomaticReload = AutomaticReloadCheckBox.IsChecked == true");
         StringAssert.Contains(source, "ButtonGrenades = ButtonGrenadesCheckBox.IsChecked == true");
         StringAssert.Contains(source, "SmoothTurning = SmoothTurningCheckBox.IsChecked == true");
-        StringAssert.Contains(source, "GameplayOptionEnvironment.Resolve(settings)");
+        StringAssert.Contains(source, "GameplayOptionEnvironment.ApplyTo(startInfo.Environment, settings)");
         StringAssert.Contains(source, "startInfo.Environment[variable.Key] = variable.Value");
     }
 

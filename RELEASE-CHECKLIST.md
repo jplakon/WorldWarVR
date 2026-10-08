@@ -3,8 +3,9 @@
 Use this checklist for World War VR public pre-releases. A release is not
 complete until the portable binary and complete matching source are available
 together without a subscription at https://github.com/jplakon/WorldWarVR/releases.
-The first free beta.3 release retains the existing beta.3 binaries; document
-distribution-only changes separately from gameplay and hardware-test evidence.
+For beta.4, retain the accepted chest-test native DLL and production native
+launcher helper. The WinUI launcher is republished with beta.4 version metadata;
+document that boundary separately from physical-headset acceptance.
 
 ## Version and source
 
@@ -15,8 +16,8 @@ distribution-only changes separately from gameplay and hardware-test evidence.
 - [ ] Run the native and managed builds and tests from the exact snapshot.
 - [ ] Review `LICENSE`, `PROVENANCE.md`, and `THIRD-PARTY-NOTICES.md`.
 - [ ] Confirm the binary package and source package were produced together.
-      For unchanged beta.3 binaries, verify their exact identity and ensure the
-      source's only new differences are the documented public-distribution changes.
+      If retaining accepted native binaries, verify their exact identity and
+      compare the compiled source inputs against the accepted source snapshot.
 
 ## Required GitHub release assets
 
@@ -44,7 +45,9 @@ distribution-only changes separately from gameplay and hardware-test evidence.
 
 Record what was actually tested and on which binary/runtime/headset. The prior
 representative-weapon and grenade checks below are historical acceptance, not
-a claim that the first free release received a new full Campaign playthrough.
+a claim that beta.4 received a new full Campaign playthrough. Record beta.4's
+focused chest, grip, and reload checks separately; do not inherit every box as
+newly verified on this release or on every headset.
 
 - [ ] Run the portable launcher from a fresh folder and verify it accepts a
       legitimate World at War 1.7 installation without modifying game files.

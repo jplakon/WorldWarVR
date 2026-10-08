@@ -75,6 +75,19 @@ public static class GameplayOptionEnvironment
     public const string TurnModeVariable = "WAWVR_TURN_MODE";
     public const string DeferXrBeginFrameVariable = "WAWVR_DEFER_XR_BEGIN_FRAME";
 
+    public static void ApplyTo(
+        IDictionary<string, string?> childEnvironment,
+        LauncherSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(childEnvironment);
+        foreach (var variable in Resolve(settings))
+        {
+            // Assign explicit off values too: a child may inherit an enabled
+            // option from the process that started the launcher.
+            childEnvironment[variable.Key] = variable.Value;
+        }
+    }
+
     public static IReadOnlyDictionary<string, string> Resolve(LauncherSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);

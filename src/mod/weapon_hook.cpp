@@ -8,6 +8,7 @@
 #include "bazooka_trail_hook.hpp"
 #include "bolt_action_weapon_profile.hpp"
 #include "camera_comfort_logic.hpp"
+#include "chest_weapon_pose.hpp"
 
 #include "controller_state.hpp"
 #include "firing_haptics.hpp"
@@ -717,6 +718,7 @@ thread_local ActiveWeaponPoseContext g_active_weapon_pose{};
 thread_local ActiveHandsContext g_active_hands{};
 thread_local HeadRelativeWeaponFreezeState
     g_head_relative_weapon_freeze{};
+thread_local ChestWeaponPoseState g_chest_weapon_pose_state{};
 thread_local WeaponGripState g_weapon_grip_state{};
 thread_local CommittedWeaponGripState g_committed_weapon_grip{};
 thread_local std::uint64_t g_held_pose_failure_since_milliseconds = 0;
@@ -2256,36 +2258,43 @@ void invalidate_published_muzzle() noexcept {
 }
 
 [[nodiscard]] bool apply_chest_weapon_placement(
+    const ControllerFrameSnapshot& snapshot,
     const wawvr::xr::Vec3f& camera_origin,
     const wawvr::xr::Basis3f& camera_axis,
     wawvr::xr::Vec3f* const weapon_origin,
     wawvr::xr::Basis3f* const weapon_axis) noexcept {
-    if (weapon_origin == nullptr || weapon_axis == nullptr) {
+    if (weapon_origin == nullptr || weapon_axis == nullptr ||
+        !snapshot.frame.views_valid ||
+        !controller_frame_is_current(snapshot, GetTickCount64())) {
         return false;
     }
-    // The root sits just forward of the sternum. The barrel lies diagonally
-    // upward across the chest instead of pointing through the wearer.
-    constexpr wawvr::xr::Vec3f kChestRootLocal{7.0F, 0.0F, -17.0F};
-    constexpr wawvr::xr::Basis3f kChestAxisLocal{
-        {0.226455F, 0.566139F, 0.792594F},
-        {-0.928477F, 0.371391F, 0.0F},
-        {-0.294346F, -0.735865F, 0.609749F},
-    };
-    const wawvr::xr::Vec3f origin = add_local_vector(
-        camera_origin, compose_local_vector(camera_axis, kChestRootLocal));
-    const wawvr::xr::Basis3f axis{
-        compose_local_vector(camera_axis, kChestAxisLocal.forward),
-        compose_local_vector(camera_axis, kChestAxisLocal.left),
-        compose_local_vector(camera_axis, kChestAxisLocal.up),
-    };
+    wawvr::xr::EnginePose chest{};
+    if (!build_chest_weapon_pose(
+            {camera_origin, camera_axis}, snapshot.frame.head_center,
+            snapshot.tracking_anchor, &chest, &g_chest_weapon_pose_state)) {
+        return false;
+    }
     wawvr::xr::Quaternionf ignored{};
-    if (!iw_axis_to_unit_quaternion(axis, &ignored) ||
-        !std::isfinite(origin.x) || !std::isfinite(origin.y) ||
-        !std::isfinite(origin.z)) {
+    if (!iw_axis_to_unit_quaternion(chest.axis, &ignored)) {
         return false;
     }
-    *weapon_origin = origin;
-    *weapon_axis = axis;
+    *weapon_origin = chest.position;
+    *weapon_axis = chest.axis;
+    // This is a display-only chest context, never a held/controller pose.
+    // After native animation, anchor the evaluated visible grip to this
+    // sternum target instead of leaving the model's authored root offset.
+    g_active_weapon_pose = {
+        .valid = true,
+        .grip_mode = WeaponGripMode::Chest,
+        .weapon_identity = g_weapon_grip_state.weapon_identity,
+        .controller_generation = snapshot.generation,
+        .controller_publication_milliseconds = snapshot.publication_milliseconds,
+        .tracked_grip_world = chest.position,
+        .weapon_origin = chest.position,
+        .weapon_axis = chest.axis,
+        .camera_origin = camera_origin,
+        .camera_axis = camera_axis,
+    };
     return true;
 }
 
@@ -4662,6 +4671,69 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
                 restored ? 1 : 0);
             return false;
         };
+    if (context.grip_mode == WeaponGripMode::Chest) {
+        wawvr::xr::Vec3f corrected_origin = original_origin;
+        bool anchored = align_viewmodel_origin_to_grip(
+            context.tracked_grip_world, grip_tag_world, &corrected_origin);
+        if (anchored) {
+            wawvr::xr::Vec3f observed{};
+            if (!try_translate_evaluated_root(corrected_origin, &observed)) {
+                // Preserve the same validated native fallback as held poses;
+                // do not publish a controller attachment or a muzzle here.
+                std::memcpy(
+                    reinterpret_cast<void*>(g_viewmodel_axis_origin_address),
+                    &corrected_origin, sizeof(corrected_origin));
+                wawvr_call_update_viewmodel_pose(viewmodel_dobj);
+                anchored = wawvr_call_dobj_get_world_tag_pos(
+                    viewmodel_dobj, selected_tag,
+                    reinterpret_cast<const void*>(g_viewmodel_pose_address),
+                    &observed) != 0;
+            }
+            anchored = anchored && translated_viewmodel_tag_matches(
+                context.tracked_grip_world, observed);
+            if (anchored) {
+                grip_tag_world = observed;
+            }
+        }
+        static const bool diagnostics = []() noexcept {
+            std::array<wchar_t, 2> value{};
+            return GetEnvironmentVariableW(
+                L"WAWVR_CHEST_DIAGNOSTICS", value.data(),
+                static_cast<DWORD>(value.size())) == 1 && value[0] == L'1';
+        }();
+        static std::uint64_t last_receipt = 0;
+        const auto receipt_time = GetTickCount64();
+        if (diagnostics && receipt_time - last_receipt >= 500) {
+            last_receipt = receipt_time;
+            wawvr::xr::EnginePose head{};
+            const bool head_valid = hands.valid &&
+                compose_snapshot_head_world_pose(
+                    hands.controller, hands.camera_origin,
+                    hands.camera_axis, &head);
+            stereo_diagnostic_log(
+                "ChestDiag generation=%llu weapon=%llu anchored=%d tag=%s target=(%.5f %.5f %.5f) observed=(%.5f %.5f %.5f) headValid=%d head=(%.5f %.5f %.5f) headF=(%.6f %.6f %.6f) weaponF=(%.6f %.6f %.6f)",
+                static_cast<unsigned long long>(context.controller_generation),
+                static_cast<unsigned long long>(context.weapon_identity),
+                anchored ? 1 : 0, selected_tag_name,
+                context.tracked_grip_world.x, context.tracked_grip_world.y,
+                context.tracked_grip_world.z,
+                grip_tag_world.x, grip_tag_world.y, grip_tag_world.z,
+                head_valid ? 1 : 0, head.position.x, head.position.y,
+                head.position.z, head.axis.forward.x, head.axis.forward.y,
+                head.axis.forward.z, context.weapon_axis.forward.x,
+                context.weapon_axis.forward.y, context.weapon_axis.forward.z);
+        }
+        if (!anchored) {
+            WAWVR_STEREO_DIAG_ONCE(
+                "ChestDiag evaluated chest grip alignment unavailable; no held attachment committed");
+        }
+        g_retained_weapon_pose = {};
+        g_head_relative_weapon_freeze = {};
+        invalidate_physical_scope_snapshot();
+        submit_hands({});
+        update_manual_reload_viewmodel(nullptr, nullptr, {});
+        return;
+    }
     held_breakdown_checkpoint(0);
     // Match COD4's fixed controller attachment contract. A new owner aligns
     // the evaluated grip tag and captures that result exactly once. The
@@ -5733,10 +5805,22 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
             wawvr::xr::Vec3f weapon_origin = placement->origin;
             wawvr::xr::Basis3f weapon_axis = camera_axis;
 
+            // Keep the last trustworthy heading current even while held.
+            // Releasing while looking straight down then retains the latest
+            // torso yaw, not the yaw from an earlier holster operation.
+            if (body_axis_valid && snapshot.frame.views_valid &&
+                controller_frame_is_current(snapshot, GetTickCount64())) {
+                wawvr::xr::EnginePose unused_chest_pose{};
+                static_cast<void>(build_chest_weapon_pose(
+                    {camera_origin, camera_axis}, snapshot.frame.head_center,
+                    snapshot.tracking_anchor, &unused_chest_pose,
+                    &g_chest_weapon_pose_state));
+            }
+
             if (body_axis_valid &&
                 grip_update.mode == WeaponGripMode::Chest &&
                 apply_chest_weapon_placement(
-                    camera_origin, camera_axis,
+                    snapshot, camera_origin, camera_axis,
                     &weapon_origin, &weapon_axis)) {
                 // A released weapon starts its next pickup directly at the
                 // then-current controller pose instead of easing from the
@@ -5757,7 +5841,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                         false, std::memory_order_release);
                     g_held_pose_failure_since_milliseconds = 0;
                     WAWVR_STEREO_DIAG_ONCE(
-                        "WeaponDiag both grips released; rifle placed on body-relative chest holster");
+                        "WeaponDiag both grips released; weapon anchored to HMD-yaw upright chest holster");
                 }
             } else if (body_axis_valid &&
                 (grip_update.mode == WeaponGripMode::RightHand ||
@@ -6425,7 +6509,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                         false, std::memory_order_release);
                     bool chest_written = false;
                     if (apply_chest_weapon_placement(
-                            camera_origin, camera_axis,
+                            snapshot, camera_origin, camera_axis,
                             &weapon_origin, &weapon_axis)) {
                         wawvr::xr::Quaternionf chest_quaternion{};
                         if (iw_axis_to_unit_quaternion(
@@ -6445,7 +6529,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                 if (!active_pose_published &&
                     outgoing_mode == WeaponGripMode::Chest &&
                     apply_chest_weapon_placement(
-                        camera_origin, camera_axis,
+                        snapshot, camera_origin, camera_axis,
                         &weapon_origin, &weapon_axis)) {
                     wawvr::xr::Quaternionf chest_quaternion{};
                     if (iw_axis_to_unit_quaternion(
@@ -6467,6 +6551,26 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                     WAWVR_STEREO_DIAG_ONCE(
                         "WeaponDiag COD4-parity weapon pose stabilization filters tracking shimmer once per OpenXR generation");
                 }
+            }
+            if ((grip_update.mode == WeaponGripMode::Chest ||
+                 g_committed_weapon_grip.mode == WeaponGripMode::Chest) &&
+                !g_active_weapon_pose.valid) {
+                // No current HMD anchor: never expose a stock floating pose.
+                // The desired mode may already be Chest while the last
+                // successfully committed pose still belongs to a controller.
+                reset_controller_weapon_publication_filters();
+                reset_right_ray_two_hand_steering(
+                    &g_right_ray_two_hand_steering);
+                g_weapon_attachments = {};
+                g_two_hand_attachment = {};
+                g_retained_weapon_pose = {};
+                g_head_relative_weapon_freeze = {};
+                g_committed_weapon_grip = {
+                    WeaponGripMode::Chest, current_weapon_identity};
+                g_published_support_pose.store(
+                    false, std::memory_order_release);
+                g_held_pose_failure_since_milliseconds = 0;
+                effective_draw_gun = 0;
             }
         } else {
             const std::uint64_t now_milliseconds = GetTickCount64();
@@ -6509,9 +6613,10 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
             }
             if (!retained_pose_written) {
                 // The recovery window expired (or no held pose ever existed).
-                // Retire the controller ownership atomically and render the
-                // body-relative chest pose; never leak T4's native flat-screen
-                // viewmodel placement into a VR frame.
+                // Retire controller ownership atomically. Without a head
+                // snapshot we cannot place a real chest anchor; hide until
+                // tracking recovers rather than expose a stock floating pose.
+                g_chest_weapon_pose_state = {};
                 reset_controller_weapon_publication_filters();
                 reset_right_ray_two_hand_steering(
                     &g_right_ray_two_hand_steering);
@@ -6525,33 +6630,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                 g_published_support_pose.store(
                     false, std::memory_order_release);
 
-                wawvr::xr::Vec3f camera_origin{};
-                wawvr::xr::Basis3f camera_axis{};
-                std::memcpy(
-                    &camera_origin,
-                    reinterpret_cast<const void*>(g_camera_origin_address),
-                    sizeof(camera_origin));
-                std::memcpy(
-                    &camera_axis,
-                    reinterpret_cast<const void*>(g_camera_axis_address),
-                    sizeof(camera_axis));
-                wawvr::xr::Basis3f body_axis{};
-                wawvr::xr::Vec3f chest_origin = placement->origin;
-                wawvr::xr::Basis3f chest_axis{};
-                wawvr::xr::Quaternionf chest_quaternion{};
-                if (gravity_level_t4_camera_axis(camera_axis, &body_axis) &&
-                    apply_chest_weapon_placement(
-                        camera_origin, body_axis,
-                        &chest_origin, &chest_axis) &&
-                    iw_axis_to_unit_quaternion(
-                        chest_axis, &chest_quaternion)) {
-                    placement->origin = chest_origin;
-                    placement->quaternion = chest_quaternion;
-                    WAWVR_STEREO_DIAG_ONCE(
-                        "WeaponDiag controller broker recovery grace expired; weapon retired to chest until a fresh grip");
-                } else {
-                    effective_draw_gun = 0;
-                }
+                effective_draw_gun = 0;
             }
         }
     }
@@ -8263,6 +8342,7 @@ void request_weapon_hook_shutdown() noexcept {
     g_weapon_hook_enabled.store(false, std::memory_order_release);
     g_published_support_pose.store(false, std::memory_order_release);
     g_head_relative_weapon_freeze = {};
+    g_chest_weapon_pose_state = {};
     reset_right_ray_two_hand_steering(&g_right_ray_two_hand_steering);
     AcquireSRWLockExclusive(&g_weapon_frame_base_receipt_lock);
     g_weapon_frame_base_receipt = {};

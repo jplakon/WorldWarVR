@@ -17,6 +17,7 @@ public sealed partial class MainPage : Page
     private GameInstallationValidation? _validation;
     private CancellationTokenSource? _validationCancellation;
     private bool _initializing = true;
+    private bool _initializationStarted;
     private bool _launching;
 
     public bool IsHighContrast { get; } = new AccessibilitySettings().HighContrast;
@@ -34,19 +35,41 @@ public sealed partial class MainPage : Page
 
     private async void MainPage_Loaded(object sender, RoutedEventArgs e)
     {
-        _settings = await _settingsStore.LoadAsync();
-        if (string.IsNullOrWhiteSpace(_settings.GameDirectory))
+        if (_initializationStarted)
         {
-            SetActivity("Looking for your Steam installation…", busy: true);
-            var detected = await Task.Run(SteamInstallDetector.FindCandidateGameDirectories);
-            var validated = await Task.WhenAll(
-                detected.Select(path => GameInstallationValidator.ValidateAsync(path)));
-            var best = GameInstallationValidator.ChooseBestCandidate(validated);
-            _settings = _settings with { GameDirectory = best?.Directory ?? string.Empty };
+            return;
         }
 
-        ApplySettingsToControls();
+        _initializationStarted = true;
+        SetActivity("Loading your settings…", busy: true);
+        try
+        {
+            _settings = await _settingsStore.LoadAsync();
+            if (string.IsNullOrWhiteSpace(_settings.GameDirectory))
+            {
+                SetActivity("Looking for your Steam installation…", busy: true);
+                var detected = await Task.Run(SteamInstallDetector.FindCandidateGameDirectories);
+                var validated = await Task.WhenAll(
+                    detected.Select(path => GameInstallationValidator.ValidateAsync(path)));
+                var best = GameInstallationValidator.ChooseBestCandidate(validated);
+                _settings = _settings with { GameDirectory = best?.Directory ?? string.Empty };
+            }
+
+            ApplySettingsToControls();
+        }
+        catch (Exception exception)
+        {
+            Debug.WriteLine($"World War VR startup failed: {exception}");
+            ShowActivityError(
+                "The launcher could not finish startup. Close and reopen it to try again. " +
+                "Your settings have not been saved.");
+            return;
+        }
+
+        // Until hydration completes, no user choice may be accepted and then
+        // overwritten by the saved settings or first-run game discovery.
         _initializing = false;
+        this.IsEnabled = true;
         await ValidateCurrentDirectoryAsync();
         await SaveSettingsQuietlyAsync();
     }
@@ -358,7 +381,6 @@ public sealed partial class MainPage : Page
                 settings,
                 _validation);
             launchEnvironment = new Dictionary<string, string>(
-                GameplayOptionEnvironment.Resolve(settings),
                 StringComparer.OrdinalIgnoreCase);
             var openXrSelection =
                 OpenXrRuntimeCompatibility.ResolveLaunchSelection();
@@ -413,6 +435,7 @@ public sealed partial class MainPage : Page
             {
                 startInfo.ArgumentList.Add(argument);
             }
+            GameplayOptionEnvironment.ApplyTo(startInfo.Environment, settings);
             foreach (var variable in launchEnvironment)
             {
                 startInfo.Environment[variable.Key] = variable.Value;

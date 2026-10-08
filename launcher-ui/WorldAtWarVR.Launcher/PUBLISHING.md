@@ -26,10 +26,10 @@ The UI resolves its support files through `AppContext.BaseDirectory`; published 
 ## Free GitHub packaging
 
 Follow `docs/MANUAL_RELEASE.md` and the release checklist. Keep one version in
-launcher metadata, release filenames, source snapshot, and tag. The first
-free GitHub pre-release is `v0.4.0-beta.3` and retains the existing beta.3
-binaries; documentation and distribution changes do not require claiming a
-new gameplay build or hardware acceptance.
+launcher metadata, release filenames, source snapshot, and tag. The current
+release is `v0.4.0-beta.4`. Its gameplay DLL is the exact headset-accepted
+chest/reload candidate; only the managed launcher is rebuilt for beta.4 version
+metadata from the tested implementation. Record that boundary in build evidence.
 
 The public GitHub release contains:
 

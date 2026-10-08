@@ -4,7 +4,7 @@ param(
     [string]$Configuration = 'Release',
 
     [ValidatePattern('^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta|rc)\.(?:0|[1-9][0-9]*))?$')]
-    [string]$Version = '0.4.0-beta.3',
+    [string]$Version = '0.4.0-beta.4',
 
     [string]$InnoCompiler = '',
 
@@ -35,7 +35,7 @@ $launcherProject = Join-Path $repoRoot `
 $launcherTestsProject = Join-Path $repoRoot `
     'launcher-ui\WorldAtWarVR.Launcher\WorldAtWarVR.Launcher.Core.Tests\WorldAtWarVR.Launcher.Core.Tests.csproj'
 $installerBuildScript = Join-Path $repoRoot 'installer\build-installer.ps1'
-$publicRepository = 'https://github.com/jplakon/CallOfDutyWorldAtWar_VR'
+$publicRepository = 'https://github.com/jplakon/WorldWarVR'
 
 $resolvedBuildRoot = if ([string]::IsNullOrWhiteSpace($BuildRoot)) {
     [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'build-standalone'))

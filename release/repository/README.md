@@ -2,7 +2,7 @@
 
 World War VR is a pre-release OpenXR mod for the Windows retail version of **Call of Duty: World at War**. It adds stereo rendering, 6DOF headset tracking, two tracked hands, motion-controller firearms, manual reload interactions, physical scopes and grenades, comfort controls, and a standalone launcher.
 
-> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1 using evolving builds. Beta.2 and beta.3 received focused physical-headset tests, not another full Campaign replay on the final beta.3 binary. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
+> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1 using evolving builds. Later releases, including beta.4's chest placement and reload-setting work, received focused physical-headset tests rather than another full Campaign replay on the final package. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
 
 World War VR does not include Call of Duty: World at War files. You must provide your own legitimate, compatible World at War 1.7 installation.
 

@@ -2,13 +2,13 @@
 
 World War VR brings tracked, room-scale OpenXR play to the Windows retail version of **Call of Duty: World at War**. It provides stereo rendering, 6DOF headset tracking, motion-controller weapons, two-hand handling, manual reload interactions, physical scopes, grenades, and VR-native comfort controls through a standalone launcher.
 
-The first free GitHub release is **v0.4.0-beta.3**, retaining the existing
-beta.3 binaries. It includes the weapon-aiming, mounted-gun, scoped-Mosin,
-scope-HUD, Garand/M7, melee-safeguard, and launcher Browse improvements described
-in [CHANGELOG.md](CHANGELOG.md). Making the release free does not introduce
-additional gameplay fixes or establish new headset compatibility.
+The current free release is **v0.4.0-beta.4**, adding chest-anchored released
+weapons and launcher/reload-setting reliability improvements. It also includes
+the earlier aiming, mounted-gun, scoped-Mosin, scope-HUD, Garand/M7 and melee
+changes described in [CHANGELOG.md](CHANGELOG.md). This is not a new performance
+or universal headset-compatibility fix.
 
-> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.3 binary. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
+> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.4 package. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
 
 World War VR is a fan-made open-source project. It does not include Call of Duty: World at War executables, maps, textures, audio, or other Activision game content. You need your own legitimate, compatible World at War 1.7 installation.
 
@@ -108,6 +108,7 @@ runtime test. It is not a universal Pimax or Index fix. See
 | Rise / jump | Right stick up; rises one stance step, or jumps while standing |
 | Draw and retain firearm | Right grip |
 | Add support hand / enter firing pose | Left grip |
+| Rest weapon on chest | Release both grips; the weapon follows an upright headset-based chest estimate |
 | Fire | Right index trigger |
 | Aim/fire an ordinary mounted machine gun | Aim with the right controller; fire with the right index trigger |
 | Operate bolt or charging handle | Retain the weapon with either hand; use the free hand's index trigger at the action |
@@ -146,7 +147,7 @@ Read the full [controls guide](docs/CONTROLS.md) before testing manual weapons, 
 Clone the tagged repository, including its pinned OpenXR submodule:
 
 ```powershell
-git clone --recurse-submodules --branch v0.4.0-beta.3 https://github.com/jplakon/WorldWarVR.git
+git clone --recurse-submodules --branch v0.4.0-beta.4 https://github.com/jplakon/WorldWarVR.git
 cd WorldWarVR
 ```
 
@@ -160,12 +161,12 @@ different CMake on PATH is not used. The complete pinned OpenXR source is
 already included, so this native rebuild does not require Git metadata:
 
 ```powershell
-.\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta3
+.\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta4
 ```
 
 Use a fresh build folder. The script builds the Win32 native components and
 runs their tests. The mod DLL is written to
-`rebuild-beta3\vs-release\src\mod\Release\WorldWarVR.dll`.
+`rebuild-beta4\vs-release\src\mod\Release\WorldWarVR.dll`.
 To rebuild the separate graphical launcher, install the .NET 8 SDK and follow
 the locked restore and publish commands in
 [launcher publishing instructions](launcher-ui/WorldAtWarVR.Launcher/PUBLISHING.md).

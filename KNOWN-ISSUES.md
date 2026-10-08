@@ -1,6 +1,6 @@
 # Known issues
 
-World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Beta.2's SteamVR compatibility changes and beta.3's weapon, mounted-gun, and scope fixes received focused headset tests rather than another complete Campaign replay on the final release. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent SteamVR, weapon, scope, reload-setting and chest-placement changes received focused headset tests rather than another complete Campaign replay on the final beta.4 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
 
 ## Modes
 
@@ -49,8 +49,14 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 - Physical melee has additional tracking/grip safeguards, and a held-pistol
   forward jab passed a local headset test. Original customer reports of random
   melee still need retesting before they can be considered resolved.
-- Specific bolt-rifle clip-insertion jumps, first-launch automatic-reload
-  setting inconsistencies, pistol support-hand placement, and missing manual
+- Beta.4 hardens launcher initialization and gameplay-setting handoff; manual,
+  snap/smooth, automatic and restored-manual Garand tests passed locally. The
+  original intermittent first-launch automatic-reload report was not reproduced,
+  so affected-user retesting is still required before declaring that report closed.
+- Released weapons use an upright headset-based chest estimate, not a separate
+  body tracker. Garand chest placement received local headset acceptance;
+  different proportions and uncommon weapons may need further positioning polish.
+- Specific bolt-rifle clip-insertion jumps, pistol support-hand placement, and missing manual
   reload sound/feedback remain open reports. Report the exact weapon, map,
   grip/action sequence, launcher settings, and build rather than assuming the
   earlier general weapon-stability fix covers every interaction.

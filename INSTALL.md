@@ -31,7 +31,7 @@ for rebuilding; it is provided without an additional fee.
 To verify a download in PowerShell, run:
 
 ```powershell
-Get-FileHash .\WorldWarVR-v0.4.0-beta.3-Portable.zip -Algorithm SHA256
+Get-FileHash .\WorldWarVR-v0.4.0-beta.4-Portable.zip -Algorithm SHA256
 Get-Content .\SHA256SUMS.txt
 ```
 

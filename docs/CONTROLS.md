@@ -69,6 +69,10 @@
   the native firing/ADS pose; either hand can retain a supported weapon while
   the other hand uses that free hand's index trigger for its manual weapon
   interaction.
+- Release both grips to rest the current weapon close to your chest. Its
+  position and horizontal direction follow a headset-based torso estimate,
+  including physical turns and leaning; it stays upright when you look down
+  or tilt your head. This is not independent full-body/chest tracking.
 - Left Menu short tap: Escape/open or close the native menu.
 - Left Menu held for one second: recenter position and facing direction while
   always restoring a gravity-level horizon.

@@ -32,12 +32,13 @@ logs, and credentials.
 2. Review the intended source snapshot and version metadata. Never publish a
    developer worktree's private logs, credentials, saves, or unrelated files.
 3. For a new binary build, follow the root README's native build instructions
-   and the launcher publishing contract. For the first free beta.3 release,
-   retain the existing beta.3 binary payload and verify its identity; this is
-   a distribution/documentation update, not a newly validated gameplay build.
+   and the launcher publishing contract. Beta.4 retains the exact headset-
+   accepted native gameplay DLL and production helper; the managed launcher is
+   republished with beta.4 metadata from the tested implementation. Never ship
+   a private simulator/profile-isolation helper as the production helper.
 
    ```powershell
-   .\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta3
+   .\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta4
    ```
 
 4. Record native and managed build/test evidence for the binary being shipped.
@@ -55,15 +56,23 @@ logs, and credentials.
    The repository retains the pinned OpenXR submodule. The complete Source ZIP
    also includes its contents; GitHub's automatically generated tag archive
    alone is not a complete submodule-inclusive source delivery.
-2. Create the matching version tag and a GitHub **pre-release**. For the first
-   free release, use `v0.4.0-beta.3` and the approved public snapshot.
+2. Create the matching version tag and a GitHub **pre-release**. For this
+   release, use `v0.4.0-beta.4` and the approved public snapshot.
 3. Attach the Portable and complete Source ZIPs, their checksum sidecars,
    `SHA256SUMS.txt`, and `GPL-SOURCE-NOTICE.txt` to the same public release.
-4. Use `release/GITHUB-RELEASE-v0.4.0-beta.3.md` as the beta.3 release notes.
-   State that this is free, portable, no game files are included, and the
-   earlier beta.3 binaries are unchanged. Do not claim new hardware acceptance.
+4. Use `release/GITHUB-POST-v0.4.0-beta.4.md` as the release notes. State that
+   this is free and portable, no game files are included, and describe the
+   exact local acceptance scope without closing affected-user reports.
 5. Download the final assets and verify their hashes after upload. Keep the
    matching source available wherever and whenever that binary is offered.
+
+## Patreon mirror
+
+Publish a free-access release post linking to the same GitHub release. Attach
+the release bundle containing the identical Portable and Source ZIPs, checksums,
+release notes and GPL notice. No additional fee applies to matching source.
+The historical paid-release script remains available for older workflows;
+it does not make this public version a subscription-only download.
 
 ## Installer limitation
 

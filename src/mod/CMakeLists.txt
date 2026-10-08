@@ -75,6 +75,7 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         campaign_unlock_logic.hpp
         automatic_reload_setting.cpp
         automatic_reload_setting.hpp
+        magazine_asset_readiness.hpp
         button_grenade_logic.cpp
         button_grenade_logic.hpp
         lod_fov_clamp.cpp
@@ -154,6 +155,8 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         pistol_hand_skinning.hpp
         head_relative_pose_freeze_logic.cpp
         head_relative_pose_freeze_logic.hpp
+        chest_weapon_pose.cpp
+        chest_weapon_pose.hpp
         post_t4_aim_phase_logic.cpp
         post_t4_aim_phase_logic.hpp
         weapon_pose_pipeline_trace_logic.cpp
@@ -356,6 +359,20 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
     add_test(
         NAME mod.automatic_reload_setting
         COMMAND WorldAtWarVRAutomaticReloadSettingTest
+    )
+
+    add_executable(
+        WorldAtWarVRMagazineAssetReadinessTest
+        magazine_asset_readiness.hpp
+        magazine_asset_readiness_test.cpp
+    )
+    target_link_libraries(
+        WorldAtWarVRMagazineAssetReadinessTest
+        PRIVATE wawvr_project_options
+    )
+    add_test(
+        NAME mod.magazine_asset_readiness
+        COMMAND WorldAtWarVRMagazineAssetReadinessTest
     )
 
     add_executable(
@@ -602,6 +619,18 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
             NAME mod.current_head_local_controller_pose_logic
             COMMAND WorldAtWarVRCurrentHeadLocalControllerPoseLogicTest
         )
+
+        add_executable(
+            WorldAtWarVRChestWeaponPoseTest
+            chest_weapon_pose.cpp
+            chest_weapon_pose_test.cpp
+            camera_comfort_logic.cpp
+            head_relative_pose_freeze_logic.cpp
+            "${CMAKE_SOURCE_DIR}/src/xr/xr_math.cpp"
+        )
+        target_link_libraries(WorldAtWarVRChestWeaponPoseTest PRIVATE wawvr_project_options)
+        target_include_directories(WorldAtWarVRChestWeaponPoseTest PRIVATE "${CMAKE_SOURCE_DIR}/src/xr")
+        add_test(NAME mod.chest_weapon_pose COMMAND WorldAtWarVRChestWeaponPoseTest)
 
         add_executable(
             WorldAtWarVRHeadRelativePoseFreezeLogicTest

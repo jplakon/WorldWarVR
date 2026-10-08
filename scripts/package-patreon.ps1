@@ -4,7 +4,7 @@ param(
     [string]$Configuration = 'Release',
 
     [ValidatePattern('^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:alpha|beta|rc)\.(?:0|[1-9][0-9]*))?$')]
-    [string]$Version = '0.4.0-beta.3',
+    [string]$Version = '0.4.0-beta.4',
 
     [string]$BuildRoot = '',
     [string]$OutputRoot = '',

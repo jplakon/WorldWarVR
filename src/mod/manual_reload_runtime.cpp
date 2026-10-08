@@ -6,6 +6,7 @@
 #include "detachable_magazine_weapon_profile.hpp"
 #include "input_mapping.hpp"
 #include "kar98_bolt_action_logic.hpp"
+#include "magazine_asset_readiness.hpp"
 #include "magazine_charging_logic.hpp"
 #include "magazine_chamber_lock_table.hpp"
 #include "manual_reload_controller_logic.hpp"
@@ -4759,6 +4760,22 @@ void unpack_unit_vector(
     for (auto& cached : g_magazine_asset_cache) {
         if (cached_magazine_asset_matches_source(
                 cached, profile.id, source)) {
+            const auto readiness = refresh_magazine_asset_readiness(
+                cached.asset.dobj_create_attempted,
+                cached.asset.ready, cached.asset.failed,
+                [&cached]() noexcept {
+                    XModel** created_slot = nullptr;
+                    XModel* created_model = nullptr;
+                    return read_dobj_model_slot(
+                               cached.asset.dobj.data(), &created_slot,
+                               &created_model) &&
+                        created_model == &cached.asset.model;
+                });
+            if (readiness == MagazineAssetReadiness::recovered) {
+                WAWVR_STEREO_DIAG_ONCE(
+                    "ReloadDiag %s recovered its retained magazine DObj after exact model revalidation; native creation was not repeated",
+                    profile.diagnostic_name);
+            }
             return &cached.asset;
         }
     }
@@ -4784,10 +4801,14 @@ void unpack_unit_vector(
         // DObjCreate may allocate engine-owned process-lifetime state even if
         // its postcondition cannot be confirmed. Preserve and identity-key that
         // node instead of overwriting its DObj storage on the next frame. The
-        // matching failed entry prevents repeated creation attempts.
+        // matching failed entry prevents repeated creation attempts. Later
+        // cache hits may safely revalidate that same object without rebuilding.
         if (!slot->asset.dobj_create_attempted) {
             return nullptr;
         }
+        WAWVR_STEREO_DIAG_ONCE(
+            "ReloadDiag %s retained a magazine DObj whose immediate validation failed; later cache hits will revalidate its exact model without recreating it",
+            profile.diagnostic_name);
     }
     if (source.model == nullptr || source.model->surfaces == nullptr) {
         return nullptr;
@@ -7306,6 +7327,8 @@ ManualReloadRuntimeInstallResult install_manual_reload_runtime(
     ManualReloadRuntimeInstallResult result{};
     if (g_installed.load(std::memory_order_acquire)) {
         result.status = ManualReloadRuntimeStatus::already_installed;
+        result.automatic_reload =
+            g_automatic_reload.load(std::memory_order_acquire);
         return result;
     }
     g_headset_svt40_selection_state.store(
@@ -7329,6 +7352,8 @@ ManualReloadRuntimeInstallResult install_manual_reload_runtime(
             automatic_reload_setting_enabled(std::wstring_view{
                 automatic_reload_value.data(), automatic_reload_length}),
         std::memory_order_release);
+    result.automatic_reload =
+        g_automatic_reload.load(std::memory_order_acquire);
     if (select_t4_layout_family(bindings.profile()) !=
         T4LayoutFamily::single_player_1_7_1263) {
         result.status = ManualReloadRuntimeStatus::not_applicable;

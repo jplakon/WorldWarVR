@@ -4,6 +4,36 @@ All notable public changes to World War VR are recorded here.
 
 The project follows semantic versioning where practical. Versions with an `alpha`, `beta`, or release-candidate suffix are pre-release builds and can still change incompatibly.
 
+## v0.4.0-beta.4
+
+Chest holstering and reload-setting reliability update.
+
+- Released weapons now sit close to an upright chest anchor that follows
+  tracked headset position and horizontal direction, rather than an old native
+  body-camera direction. Leaning, crouching and turning keep the weapon with
+  the player; head pitch/roll do not tilt the holstered weapon. This is an
+  HMD-based torso estimate, not full-body tracking. Held aiming remains separate.
+- Prevented early launcher interactions from being overwritten while saved
+  settings and game discovery are still loading. Initialization failures leave
+  editing/launch disabled instead of saving partially initialized controls.
+- Made child-process gameplay settings explicit and improved effective
+  reload-setting diagnostics.
+- Allowed retained manual-reload magazine assets to recover after delayed
+  validation without recreating engine-owned objects.
+
+The exact released gameplay DLL passed 72 native tests and focused Garand,
+Carbine and Colt simulator checks. Chest placement received creator headset
+acceptance on VirtualDesktopXR at 90 Hz. Reload work received five simulator
+and five physical Garand cases covering manual reload, snap/smooth switching,
+automatic reload and restoration to manual. Launcher tests and a fresh-settings
+UI check also passed. One simulator screenshot receipt timed out; the repeat
+coverage succeeded. These are focused tests, not a full beta.4 Campaign replay.
+
+The original customer's intermittent first-launch automatic reload was not
+reproduced; affected-user confirmation remains pending. Index/Pimax startup,
+Rift S aiming, Custom Zombies and regional-executable reports are not declared
+fixed. No rendering/performance change is included in this update.
+
 ## v0.4.0-beta.3
 
 Weapon aiming, scopes, mounted-gun controls, and rifle-grenade Garand update.

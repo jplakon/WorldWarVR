@@ -465,6 +465,12 @@ bool validate_game_build(HMODULE module) {
             log << " win32-error=" << manual_reload.system_error;
         }
         log << '\n';
+        if (manual_reload.status == ManualReloadRuntimeStatus::installed ||
+            manual_reload.status == ManualReloadRuntimeStatus::already_installed) {
+            log << "reload setting: WAWVR_AUTOMATIC_RELOAD effective="
+                << (manual_reload.automatic_reload ? "automatic" : "manual")
+                << " (only 1 enables automatic; missing, empty, or malformed selects manual)\n";
+        }
         log << "manual grenade bridge: profile="
             << result.bindings->profile().id
             << " fire-grenade-callsite-rva=0x150413";

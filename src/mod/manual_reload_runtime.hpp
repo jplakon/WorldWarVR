@@ -40,6 +40,8 @@ struct ManualReloadRuntimeInstallResult final {
     ManualReloadRuntimeStatus status{
         ManualReloadRuntimeStatus::dependency_unavailable};
     std::uint32_t system_error{};
+    // The immutable effective child-process option sampled by installation.
+    bool automatic_reload{};
 
     [[nodiscard]] bool ok() const noexcept {
         return status == ManualReloadRuntimeStatus::installed ||

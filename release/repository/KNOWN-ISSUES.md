@@ -1,6 +1,6 @@
 # Known issues
 
-World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1 using evolving builds. Beta.2 and beta.3 received focused headset tests, not another full Campaign replay on the final beta.3 binary. Local/offline Multiplayer remains experimental. Free GitHub distribution does not establish new gameplay fixes or hardware acceptance.
+World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1 using evolving builds. Later updates, including beta.4's chest and reload-setting work, received focused headset tests rather than another full Campaign replay on the final package. Local/offline Multiplayer remains experimental.
 
 ## Zombies
 
@@ -42,8 +42,11 @@ World War VR is beta software. The creator completed the Campaign in VR during d
   local headset checks. An unidentified blank-scope report still needs affected
   user confirmation. Hard Landing smoke flicker and pause-panel clipping also
   remain open, distinct from the fixed left-eye-only smoke and B-toggle issues.
-- Specific clip-insertion pose jumps, first-launch automatic-reload setting
-  inconsistencies, pistol support-hand placement, and missing manual reload
+- Beta.4 hardens first-launch settings initialization and handoff. Local Garand
+  manual/automatic and snap/smooth switching tests passed, but the original
+  intermittent customer reload report was not reproduced and needs their retest.
+- Chest placement uses a headset-based torso estimate, not a separate body tracker.
+- Specific clip-insertion pose jumps, pistol support-hand placement, and missing manual reload
   sound/feedback remain open reports.
 - Melee safeguards and held-pistol jabs passed local checks, but original
   unintended-melee reports still require affected-user retests.
