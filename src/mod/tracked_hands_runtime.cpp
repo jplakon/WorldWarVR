@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 #include <mutex>
 #include <vector>
@@ -225,6 +226,10 @@ struct ClosedPistolHandPairAsset final {
     std::uint64_t weapon_identity{};
     std::uint64_t idle_since_milliseconds{};
     std::array<HandAsset, wawvr::xr::kHandCount> hands{};
+    // Simulator observation only: landmarks from the SAME evaluated pose used
+    // to bake the immutable closed-glove vertices, expressed in their roots.
+    std::array<wawvr::xr::Vec3f, wawvr::xr::kHandCount> diagnostic_palm_root{};
+    bool diagnostic_palms_valid{};
     bool ready{};
     bool failed{};
 };
@@ -256,6 +261,30 @@ std::array<ClosedPistolHandPairAsset, kClosedPistolAssetCapacity>
     g_closed_pistol_assets{};
 std::array<TrackedModelAsset, kAssetCapacity> g_tracked_model_assets{};
 std::mutex g_asset_mutex{};
+
+[[nodiscard]] bool simulator_pistol_diagnostics_enabled() noexcept {
+    static const bool requested = []() noexcept {
+        const DWORD previous_error = GetLastError();
+        std::array<wchar_t, 2> flag{};
+        std::array<wchar_t, 1024> runtime{};
+        const bool enabled = GetEnvironmentVariableW(
+            L"WAWVR_PISTOL_SUPPORT_DIAGNOSTICS", flag.data(),
+            static_cast<DWORD>(flag.size())) == 1 && flag[0] == L'1';
+        const DWORD length = enabled ? GetEnvironmentVariableW(
+            L"XR_RUNTIME_JSON", runtime.data(), static_cast<DWORD>(runtime.size())) : 0;
+        const bool result = enabled && length != 0 && length < runtime.size() &&
+            std::wcsstr(runtime.data(), L"openxr_simulator") != nullptr;
+        SetLastError(previous_error);
+        return result;
+    }();
+    if (!requested) {
+        return false;
+    }
+    const DWORD previous_error = GetLastError();
+    const bool loaded = GetModuleHandleW(L"openxr_simulator.dll") != nullptr;
+    SetLastError(previous_error);
+    return loaded;
+}
 
 [[nodiscard]] bool accessible_range(
     const void* const address,
@@ -1375,7 +1404,8 @@ void unpack_unit_vector(
     void* const viewmodel_dobj,
     const void* const viewmodel_pose,
     const HandAsset& asset,
-    wawvr::xr::EnginePose* const output) noexcept {
+    wawvr::xr::EnginePose* const output,
+    wawvr::xr::Vec3f* const diagnostic_palm = nullptr) noexcept {
     if (output == nullptr || asset.wrist_name == 0 ||
         asset.thumb_name == 0) {
         return false;
@@ -1455,6 +1485,11 @@ void unpack_unit_vector(
     }
     output->position = wrist;
     output->axis = root_axis;
+    if (diagnostic_palm != nullptr) {
+        *diagnostic_palm = add(wrist, {
+            finger_center.x * 0.5F, finger_center.y * 0.5F,
+            finger_center.z * 0.5F});
+    }
     return finite_vector(output->position);
 }
 
@@ -1515,10 +1550,12 @@ void unpack_unit_vector(
         return nullptr;
     }
     std::array<wawvr::xr::EnginePose, wawvr::xr::kHandCount> root_world{};
+    const bool diagnostic = simulator_pistol_diagnostics_enabled();
+    std::array<wawvr::xr::Vec3f, wawvr::xr::kHandCount> diagnostic_palms{};
     for (std::size_t hand = 0; hand < root_world.size(); ++hand) {
         if (!read_authored_gripping_hand_pose(
                 viewmodel_dobj, viewmodel_pose, ordinary_pair.hands[hand],
-                &root_world[hand])) {
+                &root_world[hand], diagnostic ? &diagnostic_palms[hand] : nullptr)) {
             return nullptr;
         }
     }
@@ -1550,6 +1587,21 @@ void unpack_unit_vector(
     }
     slot->ready = built;
     slot->failed = !built;
+    if (built && diagnostic) {
+        slot->diagnostic_palms_valid = true;
+        for (std::size_t hand = 0; hand < root_world.size(); ++hand) {
+            const auto& root = root_world[hand];
+            const wawvr::xr::Vec3f relative{
+                diagnostic_palms[hand].x - root.position.x,
+                diagnostic_palms[hand].y - root.position.y,
+                diagnostic_palms[hand].z - root.position.z};
+            slot->diagnostic_palm_root[hand] = {
+                dot(root.axis.forward, relative), dot(root.axis.left, relative),
+                dot(root.axis.up, relative)};
+            slot->diagnostic_palms_valid = slot->diagnostic_palms_valid &&
+                finite_vector(slot->diagnostic_palm_root[hand]);
+        }
+    }
     stereo_diagnostic_log(
         "HandDiag closed pistol glove bake %s: identity=%llu leftTriangles=%u rightTriangles=%u; native evaluated bones read only and cached private vertices immutable",
         built ? "ready" : "rejected",
@@ -1557,6 +1609,126 @@ void unpack_unit_vector(
         slot->hands[static_cast<std::size_t>(wawvr::xr::Hand::Left)].kept_triangles,
         slot->hands[static_cast<std::size_t>(wawvr::xr::Hand::Right)].kept_triangles);
     return slot->ready ? slot : nullptr;
+}
+
+// Diagnostic landmarks follow the final submitted root, including the normal
+// pickup blend. "Palm" is the wrist-to-knuckle-center midpoint, not a guessed
+// screen-space glove center. It is cached with the closed mesh, so this exposes
+// any bind-attachment versus baked-geometry mismatch without changing either.
+void log_simulator_pistol_support(
+    void* const viewmodel_dobj,
+    const void* const viewmodel_pose,
+    const ControllerFrameSnapshot& controller,
+    const TrackedHandsWeaponState& weapon,
+    const HandPairAsset& ordinary,
+    const ClosedPistolHandPairAsset* const closed,
+    const bool support_ready,
+    const std::array<wawvr::xr::EnginePose, wawvr::xr::kHandCount>& submitted,
+    const std::array<bool, wawvr::xr::kHandCount>& submitted_valid) noexcept {
+    static std::uint32_t samples = 0;
+    static std::uint64_t last_ms = 0;
+    static std::array<std::uint64_t, 6> previous{};
+    constexpr std::uint32_t kMaximumSamples = 4000; // At most 12,000 rows.
+    if (!weapon.pistol_support_pose || samples >= kMaximumSamples) {
+        return;
+    }
+    const std::array<std::uint64_t, 6> state{
+        weapon.pistol_weapon_identity, weapon.right_gripping, weapon.left_gripping,
+        support_ready, closed != nullptr, controller.frame.actions.focused};
+    const auto now = GetTickCount64();
+    const auto interval = weapon.left_gripping ? 100U : 500U;
+    if (samples != 0 && state == previous && now >= last_ms && now - last_ms < interval) {
+        return;
+    }
+    previous = state;
+    last_ms = now;
+    const auto sample = ++samples;
+    constexpr auto right = static_cast<std::size_t>(wawvr::xr::Hand::Right);
+    constexpr auto left = static_cast<std::size_t>(wawvr::xr::Hand::Left);
+    std::array<wawvr::xr::Vec3f, wawvr::xr::kHandCount> palms{}, proxies{};
+    std::array<bool, wawvr::xr::kHandCount> valid{};
+    for (const auto hand : {right, left}) {
+        const auto& asset = ordinary.hands[hand];
+        const auto& pose = submitted[hand];
+        const auto& a = asset.attachment_axis;
+        const wawvr::xr::Basis3f inverse{{a.forward.x, a.left.x, a.up.x},
+            {a.forward.y, a.left.y, a.up.y}, {a.forward.z, a.left.z, a.up.z}};
+        auto bind_palm = compose(inverse, asset.attachment_position);
+        bind_palm = {-bind_palm.x, -bind_palm.y, -bind_palm.z};
+        const bool gripping = hand == right ? weapon.right_gripping : weapon.left_gripping;
+        const bool closed_used = gripping && closed != nullptr;
+        const auto palm_root = closed_used ? closed->diagnostic_palm_root[hand] : bind_palm;
+        valid[hand] = submitted_valid[hand] &&
+            (!closed_used || closed->diagnostic_palms_valid);
+        palms[hand] = add(pose.position, compose(pose.axis, palm_root));
+        proxies[hand] = add(pose.position, compose(pose.axis, bind_palm));
+        wawvr::xr::EnginePose native{};
+        wawvr::xr::Vec3f native_palm{};
+        const bool native_valid = read_authored_gripping_hand_pose(
+            viewmodel_dobj, viewmodel_pose, asset, &native, &native_palm);
+        const auto& raw = controller.frame.actions.hands[hand];
+        stereo_diagnostic_log(
+            "PistolDiag hand sample=%u hand=%s submitted=%d closed=%d landmarkValid=%d wrist=%.6g,%.6g,%.6g palm=%.6g,%.6g,%.6g proxy=%.6g,%.6g,%.6g palmRoot=%.6g,%.6g,%.6g bindPalmRoot=%.6g,%.6g,%.6g forward=%.6g,%.6g,%.6g left=%.6g,%.6g,%.6g up=%.6g,%.6g,%.6g nativeValid=%d nativeWrist=%.6g,%.6g,%.6g nativePalm=%.6g,%.6g,%.6g xr=%.6g,%.6g,%.6g xrQ=%.6g,%.6g,%.6g,%.6g squeeze=%.4f active=%d tracked=%d/%d",
+            sample, hand == right ? "R" : "L", submitted_valid[hand] ? 1 : 0,
+            closed_used ? 1 : 0, valid[hand] ? 1 : 0,
+            pose.position.x, pose.position.y, pose.position.z,
+            palms[hand].x, palms[hand].y, palms[hand].z,
+            proxies[hand].x, proxies[hand].y, proxies[hand].z,
+            palm_root.x, palm_root.y, palm_root.z, bind_palm.x, bind_palm.y, bind_palm.z,
+            pose.axis.forward.x, pose.axis.forward.y, pose.axis.forward.z,
+            pose.axis.left.x, pose.axis.left.y, pose.axis.left.z,
+            pose.axis.up.x, pose.axis.up.y, pose.axis.up.z, native_valid ? 1 : 0,
+            native.position.x, native.position.y, native.position.z,
+            native_palm.x, native_palm.y, native_palm.z,
+            raw.grip.pose.position.x, raw.grip.pose.position.y, raw.grip.pose.position.z,
+            raw.grip.pose.orientation.x, raw.grip.pose.orientation.y,
+            raw.grip.pose.orientation.z, raw.grip.pose.orientation.w,
+            raw.squeeze.current, raw.squeeze.active ? 1 : 0,
+            raw.grip.position_tracked ? 1 : 0, raw.grip.orientation_tracked ? 1 : 0);
+    }
+    const wawvr::xr::Vec3f separation{
+        palms[left].x - palms[right].x, palms[left].y - palms[right].y,
+        palms[left].z - palms[right].z};
+    const wawvr::xr::Vec3f proxy_separation{
+        proxies[left].x - proxies[right].x, proxies[left].y - proxies[right].y,
+        proxies[left].z - proxies[right].z};
+    const auto& axis = weapon.weapon_axis;
+    const auto& head = controller.frame.head_center;
+    wawvr::xr::Vec3f weapon_root{}, muzzle{};
+    const bool root_valid = accessible_range(viewmodel_pose, kPoseSize);
+    if (root_valid) {
+        std::memcpy(&weapon_root,
+            static_cast<const std::uint8_t*>(viewmodel_pose) + kPoseOriginOffset,
+            sizeof(weapon_root));
+    }
+    const auto flash_tag = tracked_hands_call_sl_find_string("tag_flash");
+    const bool muzzle_valid = flash_tag != 0 && flash_tag <= 0xFFFFU &&
+        read_viewmodel_world_tag_position(viewmodel_dobj,
+            static_cast<std::uint16_t>(flash_tag), viewmodel_pose, &muzzle);
+    const wawvr::xr::Vec3f right_from_muzzle{palms[right].x - muzzle.x,
+        palms[right].y - muzzle.y, palms[right].z - muzzle.z};
+    const wawvr::xr::Vec3f left_from_muzzle{palms[left].x - muzzle.x,
+        palms[left].y - muzzle.y, palms[left].z - muzzle.z};
+    stereo_diagnostic_log(
+        "PistolDiag state sample=%u final=%d ms=%llu generation=%llu frame=%llu sequence=%llu identity=%llu retained=%d/%d focused=%d bake=%d support=%d separationValid=%d palmDeltaWeapon=%.6g,%.6g,%.6g proxyDeltaWeapon=%.6g,%.6g,%.6g weaponF=%.6g,%.6g,%.6g weaponL=%.6g,%.6g,%.6g weaponU=%.6g,%.6g,%.6g head=%.6g,%.6g,%.6g headQ=%.6g,%.6g,%.6g,%.6g rootValid=%d root=%.6g,%.6g,%.6g muzzleValid=%d muzzle=%.6g,%.6g,%.6g palmBoreLateral=%.6g/%.6g",
+        sample, sample == kMaximumSamples ? 1 : 0, static_cast<unsigned long long>(now),
+        static_cast<unsigned long long>(controller.generation),
+        static_cast<unsigned long long>(controller.frame.frame_id),
+        static_cast<unsigned long long>(controller.frame.actions.sequence),
+        static_cast<unsigned long long>(weapon.pistol_weapon_identity),
+        weapon.right_gripping ? 1 : 0, weapon.left_gripping ? 1 : 0,
+        controller.frame.actions.focused ? 1 : 0, closed != nullptr ? 1 : 0,
+        support_ready ? 1 : 0, valid[right] && valid[left] ? 1 : 0,
+        dot(axis.forward, separation), dot(axis.left, separation), dot(axis.up, separation),
+        dot(axis.forward, proxy_separation), dot(axis.left, proxy_separation),
+        dot(axis.up, proxy_separation), axis.forward.x, axis.forward.y, axis.forward.z,
+        axis.left.x, axis.left.y, axis.left.z, axis.up.x, axis.up.y, axis.up.z,
+        head.position.x, head.position.y, head.position.z,
+        head.orientation.x, head.orientation.y, head.orientation.z, head.orientation.w,
+        root_valid && finite_vector(weapon_root) ? 1 : 0,
+        weapon_root.x, weapon_root.y, weapon_root.z, muzzle_valid ? 1 : 0,
+        muzzle.x, muzzle.y, muzzle.z,
+        dot(axis.left, right_from_muzzle), dot(axis.left, left_from_muzzle));
 }
 
 [[nodiscard]] bool calculate_weapon_latched_hand_pose(
@@ -1763,6 +1935,9 @@ void update_tracked_hands_viewmodel(
                 source, viewmodel_dobj, viewmodel_pose, *pair, weapon_state);
         bool submitted_left = false;
         bool submitted_right = false;
+        const bool pistol_diagnostic = simulator_pistol_diagnostics_enabled();
+        std::array<wawvr::xr::EnginePose, wawvr::xr::kHandCount> diagnostic_submitted{};
+        std::array<bool, wawvr::xr::kHandCount> diagnostic_submitted_valid{};
         std::uint32_t submitted_left_entity = kNoSyntheticSceneLease;
         std::uint32_t submitted_right_entity = kNoSyntheticSceneLease;
         wawvr::xr::EnginePose pistol_support_pose{};
@@ -1848,11 +2023,20 @@ void update_tracked_hands_viewmodel(
                     camera_origin, submitted_entity)) {
                 continue;
             }
+            if (pistol_diagnostic) {
+                diagnostic_submitted[hand_index] = submitted_pose;
+                diagnostic_submitted_valid[hand_index] = true;
+            }
             if (hand == wawvr::xr::Hand::Left) {
                 submitted_left = true;
             } else {
                 submitted_right = true;
             }
+        }
+        if (pistol_diagnostic) {
+            log_simulator_pistol_support(viewmodel_dobj, viewmodel_pose,
+                controller, weapon_state, *pair, closed_pistol_pair,
+                pistol_support_ready, diagnostic_submitted, diagnostic_submitted_valid);
         }
         if (submitted_left_entity != kNoSyntheticSceneLease &&
             submitted_right_entity != kNoSyntheticSceneLease) {

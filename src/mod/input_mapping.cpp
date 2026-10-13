@@ -655,6 +655,12 @@ PhysicalMeleeGesture update_physical_melee_gesture(
         state->held_pistol_sample_count = std::min(
             state->held_pistol_sample_count + 1, capacity);
     };
+    const bool trigger_interaction_held =
+        float_held(right.trigger) || bool_held(right.trigger_click) ||
+        float_held(left.trigger);
+    const bool trigger_interaction_released =
+        state->trigger_interaction_was_held && !trigger_interaction_held;
+    state->trigger_interaction_was_held = trigger_interaction_held;
     const auto establish_gesture_origin = [&]() noexcept {
         state->input_was_owned = true;
         state->pose_was_valid = true;
@@ -683,13 +689,13 @@ PhysicalMeleeGesture update_physical_melee_gesture(
         return PhysicalMeleeGesture::none;
     }
 
-    const bool trigger_interaction_held =
-        float_held(right.trigger) || bool_held(right.trigger_click) ||
-        float_held(left.trigger);
-    if (trigger_interaction_held ||
+    if (trigger_interaction_held || trigger_interaction_released ||
         sample_milliseconds < state->cooldown_until_milliseconds) {
         // Never allow firing, grenade, or reload motion to accumulate into a
         // delayed melee as soon as the reserved trigger/cooldown is released.
+        // The first released-trigger sample still spans an interval whose
+        // previous endpoint belonged to that interaction. Discard it too;
+        // only motion starting after release may become a deliberate attack.
         establish_gesture_origin();
         return PhysicalMeleeGesture::none;
     }

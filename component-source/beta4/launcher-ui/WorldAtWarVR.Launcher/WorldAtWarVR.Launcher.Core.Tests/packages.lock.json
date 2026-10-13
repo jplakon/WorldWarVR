@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0-windows7.0": {
+      "Microsoft.NET.Test.Sdk": {
+        "type": "Direct",
+        "requested": "[17.10.0-preview-24080-01, )",
+        "resolved": "17.10.0-preview-24080-01",
+        "contentHash": "nlFDfhAofGR+pHCKCb2fhElVpqnBrsJNlaobrrqFA04H4pgqJEBxsx8QDffg4Jpr9J3aYF3xhZkmdW2xGhQ+SA==",
+        "dependencies": {
+          "Microsoft.CodeCoverage": "17.10.0-preview-24080-01",
+          "Microsoft.TestPlatform.TestHost": "17.10.0-preview-24080-01"
+        }
+      },
+      "MSTest.TestAdapter": {
+        "type": "Direct",
+        "requested": "[3.1.1, )",
+        "resolved": "3.1.1",
+        "contentHash": "kMvdO5dhrUR3o1qk0fzS0St0prlKyMQAfz1ChVAUdGGobTU5ehR60szOFto0+Q7rFG5iXMvTlVIthXM9EcNYnw=="
+      },
+      "MSTest.TestFramework": {
+        "type": "Direct",
+        "requested": "[3.1.1, )",
+        "resolved": "3.1.1",
+        "contentHash": "3rjkGxciNHHmPW8cl1/QVIYjOpfptjmAH5JrLBw+dnMTYDoweg3I579N7OIbar3Zd3q9dfWFrCy2LEV/AmPn3A=="
+      },
+      "Microsoft.CodeCoverage": {
+        "type": "Transitive",
+        "resolved": "17.10.0-preview-24080-01",
+        "contentHash": "GL66nih/QwuyUFUYv76kkojvqvDaVvi3G9K9dQopWFFcVWmisIDIavVek8eBUpxsp4YrMI3dTg6mc5WjsuJYlQ=="
+      },
+      "Microsoft.TestPlatform.ObjectModel": {
+        "type": "Transitive",
+        "resolved": "17.10.0-preview-24080-01",
+        "contentHash": "c80Y9Ur/Sl5Pb7AHqqZTnLJ/wZGHwbYk1/9SEUMhbHrJJCf3UoDjijqF6fs/F2XimOJlUcPiwEI0usRIQS+uFw==",
+        "dependencies": {
+          "System.Reflection.Metadata": "1.6.0"
+        }
+      },
+      "Microsoft.TestPlatform.TestHost": {
+        "type": "Transitive",
+        "resolved": "17.10.0-preview-24080-01",
+        "contentHash": "G0da8liGaoZZoaPIKM6pXwxLHc/A6f2JxOIrfyN0S53rrdEgMMq0KwfuKZxjux03upH9BsCIJmSesgxu/EemVQ==",
+        "dependencies": {
+          "Microsoft.TestPlatform.ObjectModel": "17.10.0-preview-24080-01",
+          "Newtonsoft.Json": "13.0.1"
+        }
+      },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.1",
+        "contentHash": "ppPFpBcvxdsfUonNcvITKqLl3bqxWbDCZIzDWHzjpdAHRFfZe0Dw9HmA0+za13IdyrgJwpkDTDA9fHaxOrt20A=="
+      },
+      "System.Reflection.Metadata": {
+        "type": "Transitive",
+        "resolved": "1.6.0",
+        "contentHash": "COC1aiAJjCoA5GBF+QKL2uLqEBew4JsCkQmoHKbN3TlOZKa2fKLz5CpiRQKDz0RsAOEGsVKqOD5bomsXq/4STQ=="
+      },
+      "WorldWarVR.Launcher.Core": {
+        "type": "Project"
+      }
+    },
+    "net8.0-windows7.0/win-x64": {}
+  }
+}

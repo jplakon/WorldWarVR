@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="WorldAtWarVR_Launcher.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:WorldAtWarVR_Launcher">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!-- World War VR visual language. The launcher is intentionally
+                 single-theme; high-contrast users receive native system colors. -->
+            <Color x:Key="LauncherBaseColor">#070706</Color>
+            <Color x:Key="LauncherSurfaceColor">#E5100F0D</Color>
+            <Color x:Key="LauncherSurfaceHoverColor">#F0181613</Color>
+            <Color x:Key="LauncherAccentColor">#E88432</Color>
+            <Color x:Key="LauncherAccentDarkColor">#8B421D</Color>
+            <Color x:Key="LauncherTextColor">#E7DED1</Color>
+            <Color x:Key="LauncherSecondaryTextColor">#B6AA9A</Color>
+            <Color x:Key="LauncherMutedTextColor">#796F65</Color>
+            <Color x:Key="LauncherBorderColor">#665A4C3D</Color>
+            <Color x:Key="LauncherStrongBorderColor">#A570492D</Color>
+
+            <SolidColorBrush x:Key="LauncherBaseBrush" Color="{StaticResource LauncherBaseColor}" />
+            <SolidColorBrush x:Key="LauncherSurfaceBrush" Color="{StaticResource LauncherSurfaceColor}" />
+            <SolidColorBrush x:Key="LauncherSurfaceHoverBrush" Color="{StaticResource LauncherSurfaceHoverColor}" />
+            <SolidColorBrush x:Key="LauncherAccentBrush" Color="{StaticResource LauncherAccentColor}" />
+            <SolidColorBrush x:Key="LauncherAccentDarkBrush" Color="{StaticResource LauncherAccentDarkColor}" />
+            <SolidColorBrush x:Key="LauncherTextBrush" Color="{StaticResource LauncherTextColor}" />
+            <SolidColorBrush x:Key="LauncherSecondaryTextBrush" Color="{StaticResource LauncherSecondaryTextColor}" />
+            <SolidColorBrush x:Key="LauncherMutedTextBrush" Color="{StaticResource LauncherMutedTextColor}" />
+            <SolidColorBrush x:Key="LauncherBorderBrush" Color="{StaticResource LauncherBorderColor}" />
+            <SolidColorBrush x:Key="LauncherStrongBorderBrush" Color="{StaticResource LauncherStrongBorderColor}" />
+            <SolidColorBrush x:Key="LauncherTransparentBrush" Color="Transparent" />
+
+            <FontFamily x:Key="LauncherDisplayFont">Bahnschrift</FontFamily>
+            <FontFamily x:Key="LauncherBodyFont">Bahnschrift</FontFamily>
+
+            <Style x:Key="SectionHeadingStyle" TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{StaticResource LauncherSecondaryTextBrush}" />
+                <Setter Property="FontFamily" Value="{StaticResource LauncherDisplayFont}" />
+                <Setter Property="FontSize" Value="20" />
+                <Setter Property="FontStretch" Value="Condensed" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="CharacterSpacing" Value="100" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+
+            <Style x:Key="SecondaryTextStyle" TargetType="TextBlock">
+                <Setter Property="Foreground" Value="{StaticResource LauncherSecondaryTextBrush}" />
+                <Setter Property="FontFamily" Value="{StaticResource LauncherBodyFont}" />
+                <Setter Property="TextWrapping" Value="Wrap" />
+            </Style>
+
+            <Style x:Key="LauncherTextBoxStyle" TargetType="TextBox">
+                <Setter Property="Foreground" Value="{StaticResource LauncherTextBrush}" />
+                <Setter Property="Background" Value="#D80B0B0A" />
+                <Setter Property="BorderBrush" Value="{StaticResource LauncherBorderBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="3" />
+                <Setter Property="FontFamily" Value="{StaticResource LauncherBodyFont}" />
+                <Setter Property="FontSize" Value="17" />
+                <Setter Property="MinHeight" Value="54" />
+                <Setter Property="Padding" Value="16,0" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+            </Style>
+
+            <Style x:Key="LauncherSecondaryButtonStyle" TargetType="Button">
+                <Setter Property="Foreground" Value="{StaticResource LauncherTextBrush}" />
+                <Setter Property="Background" Value="#D8141210" />
+                <Setter Property="BorderBrush" Value="{StaticResource LauncherBorderBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="3" />
+                <Setter Property="FontFamily" Value="{StaticResource LauncherDisplayFont}" />
+                <Setter Property="FontSize" Value="18" />
+                <Setter Property="FontStretch" Value="Condensed" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="MinHeight" Value="54" />
+                <Setter Property="Padding" Value="28,0" />
+            </Style>
+
+            <Style x:Key="LauncherChoiceStyle" TargetType="RadioButton">
+                <Setter Property="Foreground" Value="{StaticResource LauncherTextBrush}" />
+                <Setter Property="Background" Value="{StaticResource LauncherSurfaceBrush}" />
+                <Setter Property="BorderBrush" Value="{StaticResource LauncherBorderBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="4" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="MinHeight" Value="110" />
+                <Setter Property="Padding" Value="24,16" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="RadioButton">
+                            <Border
+                                x:Name="CardBorder"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{TemplateBinding CornerRadius}">
+                                <Grid ColumnSpacing="18">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="38" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid Width="36" Height="36" VerticalAlignment="Center">
+                                        <Ellipse
+                                            x:Name="SelectionRing"
+                                            Fill="#32000000"
+                                            Stroke="#FF867B6E"
+                                            StrokeThickness="2" />
+                                        <FontIcon
+                                            x:Name="SelectionCheck"
+                                            FontSize="19"
+                                            Foreground="#FF17110C"
+                                            Glyph="&#xE73E;"
+                                            Visibility="Collapsed" />
+                                    </Grid>
+                                    <ContentPresenter
+                                        Grid.Column="1"
+                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                        VerticalAlignment="Center"
+                                        Content="{TemplateBinding Content}"
+                                        ContentTemplate="{TemplateBinding ContentTemplate}" />
+                                </Grid>
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="CardBorder" Storyboard.TargetProperty="Background">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource LauncherSurfaceHoverBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed" />
+                                        <VisualState x:Name="Disabled">
+                                            <Storyboard>
+                                                <DoubleAnimation Storyboard.TargetName="CardBorder" Storyboard.TargetProperty="Opacity" To="0.45" Duration="0" />
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                    <VisualStateGroup x:Name="CheckStates">
+                                        <VisualState x:Name="Unchecked" />
+                                        <VisualState x:Name="Checked">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="CardBorder" Storyboard.TargetProperty="BorderBrush">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource LauncherAccentBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="CardBorder" Storyboard.TargetProperty="BorderThickness">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="2" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SelectionRing" Storyboard.TargetProperty="Fill">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource LauncherAccentBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SelectionRing" Storyboard.TargetProperty="Stroke">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource LauncherAccentBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SelectionCheck" Storyboard.TargetProperty="Visibility">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Visible" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style x:Key="LauncherBotToggleStyle" TargetType="CheckBox">
+                <Setter Property="Foreground" Value="{StaticResource LauncherTextBrush}" />
+                <Setter Property="Background" Value="{StaticResource LauncherSurfaceBrush}" />
+                <Setter Property="BorderBrush" Value="{StaticResource LauncherBorderBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="4" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="MinHeight" Value="84" />
+                <Setter Property="Padding" Value="22,13" />
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="CheckBox">
+                            <Border
+                                x:Name="ToggleRow"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{TemplateBinding CornerRadius}">
+                                <Grid ColumnSpacing="24">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter
+                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                        VerticalAlignment="Center"
+                                        Content="{TemplateBinding Content}"
+                                        ContentTemplate="{TemplateBinding ContentTemplate}" />
+                                    <Border
+                                        x:Name="SwitchTrack"
+                                        Grid.Column="1"
+                                        Width="62"
+                                        Height="34"
+                                        Padding="3"
+                                        VerticalAlignment="Center"
+                                        Background="#FF090908"
+                                        BorderBrush="#FF74685B"
+                                        BorderThickness="1"
+                                        CornerRadius="17">
+                                        <Ellipse
+                                            x:Name="SwitchThumb"
+                                            Width="26"
+                                            Height="26"
+                                            HorizontalAlignment="Left"
+                                            Fill="#FF827568" />
+                                    </Border>
+                                </Grid>
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal" />
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="ToggleRow" Storyboard.TargetProperty="Background">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource LauncherSurfaceHoverBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed" />
+                                        <VisualState x:Name="Disabled" />
+                                    </VisualStateGroup>
+                                    <VisualStateGroup x:Name="CheckStates">
+                                        <VisualState x:Name="Unchecked" />
+                                        <VisualState x:Name="Checked">
+                                            <Storyboard>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SwitchTrack" Storyboard.TargetProperty="BorderBrush">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource LauncherAccentBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SwitchThumb" Storyboard.TargetProperty="Fill">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="{StaticResource LauncherAccentBrush}" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                                <ObjectAnimationUsingKeyFrames Storyboard.TargetName="SwitchThumb" Storyboard.TargetProperty="HorizontalAlignment">
+                                                    <DiscreteObjectKeyFrame KeyTime="0" Value="Right" />
+                                                </ObjectAnimationUsingKeyFrames>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
+            <Style x:Key="LauncherPrimaryButtonStyle" TargetType="Button">
+                <Setter Property="Foreground" Value="{StaticResource LauncherTextBrush}" />
+                <Setter Property="Background" Value="#FF6E3215" />
+                <Setter Property="BorderBrush" Value="{StaticResource LauncherAccentBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="CornerRadius" Value="3" />
+                <Setter Property="FontFamily" Value="{StaticResource LauncherDisplayFont}" />
+                <Setter Property="FontSize" Value="28" />
+                <Setter Property="FontStretch" Value="Condensed" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="CharacterSpacing" Value="45" />
+                <Setter Property="MinHeight" Value="68" />
+                <Setter Property="Padding" Value="36,0" />
+            </Style>
+
+            <Style x:Key="LauncherLinkStyle" TargetType="HyperlinkButton">
+                <Setter Property="Foreground" Value="{StaticResource LauncherSecondaryTextBrush}" />
+                <Setter Property="FontFamily" Value="{StaticResource LauncherBodyFont}" />
+                <Setter Property="FontSize" Value="14" />
+                <Setter Property="Padding" Value="4,2" />
+            </Style>
+
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="LauncherBaseBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="LauncherSurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="LauncherSurfaceHoverBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="LauncherAccentBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="LauncherAccentDarkBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="LauncherTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="LauncherSecondaryTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="LauncherMutedTextBrush" Color="{ThemeResource SystemColorGrayTextColor}" />
+                    <SolidColorBrush x:Key="LauncherBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="LauncherStrongBorderBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

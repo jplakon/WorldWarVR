@@ -27,9 +27,11 @@ The UI resolves its support files through `AppContext.BaseDirectory`; published 
 
 Follow `docs/MANUAL_RELEASE.md` and the release checklist. Keep one version in
 launcher metadata, release filenames, source snapshot, and tag. The current
-release is `v0.4.0-beta.4`. Its gameplay DLL is the exact headset-accepted
-chest/reload candidate; only the managed launcher is rebuilt for beta.4 version
-metadata from the tested implementation. Record that boundary in build evidence.
+release is `v0.4.0-beta.5`. Its gameplay DLL is retained from the tested foliage
+and interaction candidate; the managed launcher is rebuilt with beta.5 version
+metadata from frozen beta.4 logic. The native helper remains byte-identical to
+beta.4. Record those boundaries and the partial foliage improvement acceptance
+in build evidence; do not infer new all-headset compatibility.
 
 The public GitHub release contains:
 

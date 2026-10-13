@@ -45,11 +45,26 @@ enum class LodFovClampRestoreStatus : std::uint8_t {
     protection_restore_failed,
 };
 
+// Integer-only state saved by the scope to preserve nested diagnostic samples.
+struct StereoLodFovClampExecutionSample final {
+    bool enabled{};
+    std::uint32_t active_calls{};
+    std::uint32_t changed_calls{};
+    std::uint32_t first_source_bits{};
+    std::uint32_t first_selected_bits{};
+    std::uint32_t last_source_bits{};
+    std::uint32_t last_selected_bits{};
+};
+
 // This scope is deliberately thread-local. It must surround only a validated
 // stereo eye's R_RenderScene call, never a mono/menu/fallback call.
+// WAWVR_LOD_DIAGNOSTICS=1, sampled at patch installation, enables bounded
+// execution reports after this scope's native scene call has returned.
 class ScopedStereoLodFovClamp final {
 public:
-    ScopedStereoLodFovClamp() noexcept;
+    explicit ScopedStereoLodFovClamp(
+        std::uint32_t eye_index = 0xFFFFFFFFU,
+        std::uint64_t frame_id = 0) noexcept;
     ~ScopedStereoLodFovClamp();
 
     ScopedStereoLodFovClamp(const ScopedStereoLodFovClamp&) = delete;
@@ -57,6 +72,9 @@ public:
 
 private:
     bool previous_{};
+    StereoLodFovClampExecutionSample previous_execution_sample_{};
+    std::uint32_t eye_index_{};
+    std::uint64_t frame_id_{};
 };
 
 [[nodiscard]] LodFovClampPatchResult install_lod_fov_clamp_patch(

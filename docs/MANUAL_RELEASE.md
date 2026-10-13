@@ -32,13 +32,13 @@ logs, and credentials.
 2. Review the intended source snapshot and version metadata. Never publish a
    developer worktree's private logs, credentials, saves, or unrelated files.
 3. For a new binary build, follow the root README's native build instructions
-   and the launcher publishing contract. Beta.4 retains the exact headset-
-   accepted native gameplay DLL and production helper; the managed launcher is
-   republished with beta.4 metadata from the tested implementation. Never ship
+   and the launcher publishing contract. Beta.5 retains the exact tested
+   foliage gameplay DLL and beta.4 production helper; the managed launcher is
+   republished with beta.5 metadata from the tested implementation. Never ship
    a private simulator/profile-isolation helper as the production helper.
 
    ```powershell
-   .\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta4
+   .\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta5
    ```
 
 4. Record native and managed build/test evidence for the binary being shipped.
@@ -57,10 +57,10 @@ logs, and credentials.
    also includes its contents; GitHub's automatically generated tag archive
    alone is not a complete submodule-inclusive source delivery.
 2. Create the matching version tag and a GitHub **pre-release**. For this
-   release, use `v0.4.0-beta.4` and the approved public snapshot.
+   release, use `v0.4.0-beta.5` and the approved public snapshot.
 3. Attach the Portable and complete Source ZIPs, their checksum sidecars,
    `SHA256SUMS.txt`, and `GPL-SOURCE-NOTICE.txt` to the same public release.
-4. Use `release/GITHUB-POST-v0.4.0-beta.4.md` as the release notes. State that
+4. Use `release/GITHUB-POST-v0.4.0-beta.5.md` as the release notes. State that
    this is free and portable, no game files are included, and describe the
    exact local acceptance scope without closing affected-user reports.
 5. Download the final assets and verify their hashes after upload. Keep the

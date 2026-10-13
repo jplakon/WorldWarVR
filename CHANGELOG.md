@@ -4,6 +4,41 @@ All notable public changes to World War VR are recorded here.
 
 The project follows semantic versioning where practical. Versions with an `alpha`, `beta`, or release-candidate suffix are pre-release builds and can still change incompatibly.
 
+## v0.4.0-beta.5
+
+Foliage visibility and reload interaction update.
+
+- Extended unusually short grass and shrub distance cutoffs in the guarded
+  single-player renderer. Nearby detail levels and ordinary scene visibility
+  remain unchanged; tree and palm models are excluded. Shared model assets,
+  map files and global quality settings are not edited.
+- Added guarded metadata reads for changing maps and retryable rollback for
+  the paired native distance hooks. Cached ownership checks avoid repeated
+  large memory-region scans during each eye's render.
+- Refined manual Mosin clip pickup and weapon stability through clip insertion
+  and returning to a support grip.
+- Added mechanical manual-reload sound/controller-feedback events, Campaign
+  pause-menu layout adjustments and a safeguard against accidental physical
+  melee following trigger release.
+- Retained the production native launcher helper and beta.4 graphical launcher
+  behavior; only graphical-launcher version metadata changes.
+
+The retained gameplay DLL passed 76 native tests, including 463 x86
+bridge/ownership/fault assertions. Shuri Castle simulator checks covered both
+eyes and forward/back render-camera motion. A Hard Landing test through
+VirtualDesktopXR at a 90 Hz display setting reported foliage as "much better",
+with some appearance/pop-in remaining. This is acceptance of an improvement,
+not complete elimination or a headset-FPS guarantee. Mosin clip work received
+a local headset check; the additional pause, melee and reload-feedback changes
+remain simulator-qualified for broader hardware and reporter confirmation.
+No new full Campaign replay is claimed.
+
+The complete Source ZIP includes current native sources, the metadata-only
+graphical launcher sources and complete retained beta.4 component sources for
+the unchanged helper. Customer-specific startup, regional executable, Rift S
+aiming, Custom Zombies and remaining visual/interaction reports are not closed
+by this update.
+
 ## v0.4.0-beta.4
 
 Chest holstering and reload-setting reliability update.

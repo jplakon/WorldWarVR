@@ -1,7 +1,9 @@
 #include "lod_fov_clamp.hpp"
 
 #include "lod_fov_clamp_logic.hpp"
+#include "foliage_distance.hpp"
 #include "peer_thread_quiescence.hpp"
+#include "stereo_diagnostics.hpp"
 
 #include "t4/hook_api.hpp"
 #include "t4/profile.hpp"
@@ -31,6 +33,34 @@ std::uintptr_t g_patch_site = 0;
 std::array<std::uint8_t, kPatchSize> g_original_bytes{};
 std::array<std::uint8_t, kPatchSize> g_replacement_bytes{};
 thread_local bool g_stereo_scene_generation_active = false;
+thread_local StereoLodFovClampExecutionSample g_lod_execution_sample{};
+std::atomic<bool> g_lod_diagnostics_enabled{false};
+std::atomic<std::uint64_t> g_lod_diagnostic_scope_count{0};
+std::atomic<std::uint32_t> g_lod_diagnostic_report_count{0};
+constexpr std::uint32_t kMaximumLodDiagnosticReports = 32;
+constexpr std::uint64_t kInitialLodDiagnosticScopes = 16;
+constexpr std::uint64_t kLodDiagnosticFramePeriod = 600;
+
+[[nodiscard]] bool diagnostics_enabled_at_startup() noexcept {
+    static const bool enabled = []() noexcept {
+        wchar_t value[2]{};
+        return GetEnvironmentVariableW(L"WAWVR_LOD_DIAGNOSTICS", value, 2) ==
+                   1 &&
+               value[0] == L'1';
+    }();
+    return enabled;
+}
+
+[[nodiscard]] bool reserve_lod_diagnostic_report() noexcept {
+    auto reports = g_lod_diagnostic_report_count.load(std::memory_order_relaxed);
+    while (reports < kMaximumLodDiagnosticReports) {
+        if (g_lod_diagnostic_report_count.compare_exchange_weak(
+                reports, reports + 1U, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 [[nodiscard]] bool disabled_by_environment() noexcept {
     std::array<wchar_t, 16> value{};
@@ -229,8 +259,27 @@ extern "C" std::uintptr_t wawvr_t4_lod_clamp_continuation_address = 0;
 
 extern "C" std::uint32_t __cdecl wawvr_select_lod_tan_half_fov_y_bits(
     const std::uint32_t source_bits) noexcept {
-    return select_lod_tan_half_fov_y_bits(
+    const auto selected_bits = select_lod_tan_half_fov_y_bits(
         source_bits, g_stereo_scene_generation_active);
+    // The bridge calls this integer-only selector. Collect raw bits here;
+    // environment reads, formatting, and logging belong outside the bridge.
+    if (g_stereo_scene_generation_active && g_lod_execution_sample.enabled) {
+        auto& sample = g_lod_execution_sample;
+        if (sample.active_calls == 0) {
+            sample.first_source_bits = source_bits;
+            sample.first_selected_bits = selected_bits;
+        }
+        if (sample.active_calls != std::numeric_limits<std::uint32_t>::max()) {
+            ++sample.active_calls;
+        }
+        if (source_bits != selected_bits &&
+            sample.changed_calls != std::numeric_limits<std::uint32_t>::max()) {
+            ++sample.changed_calls;
+        }
+        sample.last_source_bits = source_bits;
+        sample.last_selected_bits = selected_bits;
+    }
+    return selected_bits;
 }
 
 #if defined(_MSC_VER) && defined(_M_IX86)
@@ -277,13 +326,43 @@ extern "C" __declspec(naked) void wawvr_t4_lod_clamp_bridge() noexcept {
 }
 #endif
 
-ScopedStereoLodFovClamp::ScopedStereoLodFovClamp() noexcept
-    : previous_(g_stereo_scene_generation_active) {
+ScopedStereoLodFovClamp::ScopedStereoLodFovClamp(
+    const std::uint32_t eye_index, const std::uint64_t frame_id) noexcept
+    : previous_(g_stereo_scene_generation_active),
+      previous_execution_sample_(g_lod_execution_sample),
+      eye_index_(eye_index), frame_id_(frame_id) {
     g_stereo_scene_generation_active = true;
+    g_lod_execution_sample = {};
+    g_lod_execution_sample.enabled =
+        g_lod_diagnostics_enabled.load(std::memory_order_relaxed) &&
+        g_lod_diagnostic_report_count.load(std::memory_order_relaxed) <
+            kMaximumLodDiagnosticReports;
 }
 
 ScopedStereoLodFovClamp::~ScopedStereoLodFovClamp() {
+    const auto sample = g_lod_execution_sample;
+    g_lod_execution_sample = previous_execution_sample_;
     g_stereo_scene_generation_active = previous_;
+    if (!sample.enabled) {
+        return;
+    }
+    const auto scope_ordinal =
+        g_lod_diagnostic_scope_count.fetch_add(1, std::memory_order_relaxed) + 1U;
+    if ((scope_ordinal > kInitialLodDiagnosticScopes &&
+         (frame_id_ == 0 || frame_id_ % kLodDiagnosticFramePeriod != 0)) ||
+        !reserve_lod_diagnostic_report()) {
+        return;
+    }
+    // Restore the parent scope first. Diagnostic formatting and I/O run after
+    // this scope's native scene call, never inside the instruction bridge.
+    stereo_diagnostic_log(
+        "LodDiag stereo scope: frame=%llu eye=%u activeCalls=%u changedCalls=%u firstSourceBits=0x%08X firstSelectedBits=0x%08X lastSourceBits=0x%08X lastSelectedBits=0x%08X neutralBits=0x%08X patchInstalled=%u scopeOrdinal=%llu",
+        static_cast<unsigned long long>(frame_id_), eye_index_,
+        sample.active_calls, sample.changed_calls, sample.first_source_bits,
+        sample.first_selected_bits, sample.last_source_bits,
+        sample.last_selected_bits, kNeutralLodTanHalfFovYBits,
+        g_installed.load(std::memory_order_acquire) ? 1U : 0U,
+        static_cast<unsigned long long>(scope_ordinal));
 }
 
 LodFovClampPatchResult install_lod_fov_clamp_patch(
@@ -295,6 +374,8 @@ LodFovClampPatchResult install_lod_fov_clamp_patch(
         result.continuation = wawvr_t4_lod_clamp_continuation_address;
         return result;
     }
+    g_lod_diagnostics_enabled.store(
+        diagnostics_enabled_at_startup(), std::memory_order_relaxed);
     if (disabled_by_environment()) {
         result.status = LodFovClampPatchStatus::disabled_by_environment;
         return result;
@@ -362,12 +443,16 @@ LodFovClampPatchResult install_lod_fov_clamp_patch(
     g_patch_site = result.target;
     g_original_bytes = kOriginalMovss;
     g_replacement_bytes = replacement;
+    initialize_foliage_distance(bindings);
     g_installed.store(true, std::memory_order_release);
     return result;
 #endif
 }
 
 LodFovClampRestoreStatus restore_lod_fov_clamp_patch() noexcept {
+    if (!restore_foliage_distance()) {
+        stereo_diagnostic_log("FoliageDiag teardown deferred: owned selectors could not safely be restored");
+    }
     if (!g_installed.load(std::memory_order_acquire)) {
         return LodFovClampRestoreStatus::not_installed;
     }

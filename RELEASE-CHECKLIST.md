@@ -3,8 +3,8 @@
 Use this checklist for World War VR public pre-releases. A release is not
 complete until the portable binary and complete matching source are available
 together without a subscription at https://github.com/jplakon/WorldWarVR/releases.
-For beta.4, retain the accepted chest-test native DLL and production native
-launcher helper. The WinUI launcher is republished with beta.4 version metadata;
+For beta.5, retain the tested foliage gameplay DLL and production beta.4 native
+launcher helper. The WinUI launcher is republished with beta.5 version metadata;
 document that boundary separately from physical-headset acceptance.
 
 ## Version and source
@@ -18,6 +18,7 @@ document that boundary separately from physical-headset acceptance.
 - [ ] Confirm the binary package and source package were produced together.
       If retaining accepted native binaries, verify their exact identity and
       compare the compiled source inputs against the accepted source snapshot.
+      Include retained component sources when their build inputs differ.
 
 ## Required GitHub release assets
 
@@ -45,9 +46,14 @@ document that boundary separately from physical-headset acceptance.
 
 Record what was actually tested and on which binary/runtime/headset. The prior
 representative-weapon and grenade checks below are historical acceptance, not
-a claim that beta.4 received a new full Campaign playthrough. Record beta.4's
-focused chest, grip, and reload checks separately; do not inherit every box as
+a claim that beta.5 received a new full Campaign playthrough. Record beta.5's
+focused foliage and reload checks separately; do not inherit every box as
 newly verified on this release or on every headset.
+
+Beta.5 foliage acceptance is explicitly partial: the Hard Landing headset
+check reported substantial improvement with some appearance/pop-in remaining.
+Do not describe foliage as completely fixed, infer a higher headset frame rate,
+or promote simulator-only pause/melee/feedback checks to hardware acceptance.
 
 - [ ] Run the portable launcher from a fresh folder and verify it accepts a
       legitimate World at War 1.7 installation without modifying game files.

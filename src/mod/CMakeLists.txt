@@ -68,6 +68,10 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         firing_haptic_logic.hpp
         firing_haptics.cpp
         firing_haptics.hpp
+        reload_feedback.cpp
+        reload_feedback.hpp
+        reload_feedback_logic.cpp
+        reload_feedback_logic.hpp
         mounted_gun_runtime.cpp
         mounted_gun_runtime.hpp
         frame_boundary_hook.cpp
@@ -81,6 +85,9 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         lod_fov_clamp.cpp
         lod_fov_clamp.hpp
         lod_fov_clamp_logic.hpp
+        foliage_distance.cpp
+        foliage_distance.hpp
+        foliage_distance_logic.hpp
         hud_placement_logic.cpp
         hud_placement_logic.hpp
         bolt_action_weapon_profile.cpp
@@ -190,7 +197,7 @@ if(TARGET wawvr_t4)
 endif()
 
 if(TARGET wawvr_xr)
-    target_link_libraries(WorldAtWarVR PRIVATE wawvr_xr d3d9)
+    target_link_libraries(WorldAtWarVR PRIVATE wawvr_xr d3d9 winmm)
     target_compile_definitions(WorldAtWarVR PRIVATE WAWVR_HAS_XR=1)
 endif()
 
@@ -476,6 +483,20 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
         NAME mod.lod_fov_clamp_logic
         COMMAND WorldAtWarVRLodFovClampLogicTest
     )
+
+    add_executable(WorldAtWarVRFoliageDistanceLogicTest
+        foliage_distance_logic.hpp foliage_distance_logic_test.cpp)
+    target_link_libraries(WorldAtWarVRFoliageDistanceLogicTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.foliage_distance_logic COMMAND WorldAtWarVRFoliageDistanceLogicTest)
+
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4 AND TARGET wawvr_t4)
+        add_executable(WorldAtWarVRFoliageDistanceAbiTest
+            foliage_distance_abi_test.cpp peer_thread_quiescence.cpp)
+        target_include_directories(WorldAtWarVRFoliageDistanceAbiTest PRIVATE ..)
+        target_link_libraries(WorldAtWarVRFoliageDistanceAbiTest PRIVATE wawvr_project_options wawvr_t4)
+        target_compile_options(WorldAtWarVRFoliageDistanceAbiTest PRIVATE /O2 /fp:precise /W4 /WX)
+        add_test(NAME mod.foliage_distance_abi COMMAND WorldAtWarVRFoliageDistanceAbiTest)
+    endif()
 
     if(TARGET wawvr_t4)
         add_executable(
@@ -954,6 +975,30 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
         NAME mod.input_mapping
         COMMAND WorldAtWarVRInputMappingTest
     )
+
+    add_executable(
+        WorldAtWarVRPhysicalMeleeStressTest
+        physical_melee_stress_test.cpp
+        camera_comfort_logic.cpp
+        current_head_local_controller_pose_logic.cpp
+        input_mapping.cpp
+        weapon_placement.cpp
+        "${CMAKE_SOURCE_DIR}/src/xr/xr_math.cpp"
+    )
+    target_link_libraries(WorldAtWarVRPhysicalMeleeStressTest
+        PRIVATE wawvr_project_options wawvr_t4)
+    target_include_directories(WorldAtWarVRPhysicalMeleeStressTest
+        PRIVATE "${CMAKE_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.physical_melee_stress
+        COMMAND WorldAtWarVRPhysicalMeleeStressTest)
+
+    add_executable(WorldAtWarVRReloadFeedbackLogicTest
+        reload_feedback_logic.cpp reload_feedback_logic.hpp
+        reload_feedback_logic_test.cpp)
+    target_link_libraries(WorldAtWarVRReloadFeedbackLogicTest
+        PRIVATE wawvr_project_options wawvr_gameplay)
+    add_test(NAME mod.reload_feedback_logic
+        COMMAND WorldAtWarVRReloadFeedbackLogicTest)
 
     add_executable(
         WorldAtWarVRManualGrenadeLogicTest

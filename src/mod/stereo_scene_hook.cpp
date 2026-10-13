@@ -2,6 +2,7 @@
 
 #include "camera_comfort_logic.hpp"
 #include "lod_fov_clamp.hpp"
+#include "foliage_distance.hpp"
 #include "performance_timing.hpp"
 #include "stereo_backend_hook.hpp"
 #include "stereo_diagnostics.hpp"
@@ -862,6 +863,9 @@ private:
 };
 
 void __cdecl stereo_scene_thunk(void* const refdef, const int scene_flags) noexcept {
+    // ERR_DROP may use longjmp rather than C++ unwinding. Every subsequent
+    // scene entry resets this read-only selector scope before any stock path.
+    reset_foliage_distance_scope();
     const auto original =
         g_original_render_scene.load(std::memory_order_acquire);
     if (original == nullptr) {
@@ -878,15 +882,20 @@ void __cdecl stereo_scene_thunk(void* const refdef, const int scene_flags) noexc
     }
 
 #if defined(WAWVR_HAS_T4_BINDINGS)
-    if (profile == &kMpSceneProfile) {
+    if (profile == &kMpSceneProfile || profile == &kSpSceneProfile) {
         const T4PresentationState presentation =
             read_t4_presentation_state();
         if (!should_pack_stereo_scene(
-                true, presentation.valid, presentation.connection_state,
+                profile == &kMpSceneProfile,
+                presentation.valid, presentation.connection_state,
                 presentation.active_connection_state,
                 presentation.key_catchers)) {
+            // Native menus must retain their full-frame scene/2D projection.
+            // Packing this call into two eye viewports hides SP pause controls
+            // in the desktop image too; a later mono capture cannot repair it.
             WAWVR_STEREO_DIAG_ONCE(
-                "StereoDiag scene.stock-mono accepted: MP stateValid=%u connection=%d active=%d keyCatchers=0x%X",
+                "StereoDiag scene.stock-mono accepted: %s stateValid=%u connection=%d active=%d keyCatchers=0x%X",
+                profile == &kMpSceneProfile ? "MP" : "SP",
                 presentation.valid ? 1u : 0u,
                 presentation.connection_state,
                 presentation.active_connection_state,
@@ -1113,7 +1122,8 @@ void __cdecl stereo_scene_thunk(void* const refdef, const int scene_flags) noexc
             write_scene_view(refdef, render_views[view_index]);
             began_stereo_calls = true;
             {
-                ScopedStereoLodFovClamp lod_clamp;
+                ScopedStereoLodFovClamp lod_clamp(view_index, stereo.frame_id);
+                ScopedStereoFoliageDistance foliage_distance(view_index, stereo.frame_id);
                 ScopedPerformanceTiming timing(
                     PerformanceTimingPhase::stereo_frontend_view);
                 original(refdef, scene_flags);

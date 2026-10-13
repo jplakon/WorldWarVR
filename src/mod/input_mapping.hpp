@@ -116,6 +116,7 @@ struct PhysicalMeleeState final {
     bool right_grip_latched{};
     bool left_grip_latched{};
     bool two_hand_weapon_was_held{};
+    bool trigger_interaction_was_held{};
     std::uint64_t held_pistol_identity{};
     wawvr::xr::Vec3f gesture_origin_hand_relative_to_head{};
     wawvr::xr::Vec3f gesture_origin_support_hand_relative_to_head{};
@@ -156,9 +157,10 @@ void reset_sprint_latch(SprintLatchState* state) noexcept;
 // accumulated over a bounded 150 ms window rather than requiring the full
 // gesture inside one headset frame. Sampling is advanced only once per
 // OpenXR action sequence, so the several T4 usercmds that can consume one
-// predicted frame cannot synthesize duplicates. Trigger holds and one-handed
-// grip transitions suppress the gesture; a two-hand thrust additionally
-// requires both hands to travel along the rifle axis. A gesture must contain
+// predicted frame cannot synthesize duplicates. Trigger holds, their release
+// sample, and one-handed grip transitions suppress the gesture; a two-hand
+// thrust additionally requires both hands to travel along the rifle axis.
+// A gesture must contain
 // real controller travel in tracking space as well as hand-to-head travel;
 // leaning the HMD away from otherwise stationary hands cannot synthesize an
 // attack. Implausibly large tracking-space jumps rebaseline the detector.

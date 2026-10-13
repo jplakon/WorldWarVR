@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "firing_haptics.hpp"
 #include "firing_haptic_logic.hpp"
+#include "reload_feedback.hpp"
 #include "controller_state.hpp"
 #include "stereo_diagnostics.hpp"
 #include "t4_presentation_state.hpp"
@@ -70,6 +71,9 @@ void queue_firing_haptic(const std::uint64_t now_milliseconds) noexcept {
 void service_firing_haptics(
     wawvr::xr::OpenXrRuntime& runtime,
     const wawvr::xr::FrameState* const frame) noexcept {
+    // Shared XR-owner lifecycle, with firing serviced last so its existing
+    // pulse retains priority if a reload endpoint and a shot coincide.
+    service_manual_reload_feedback(runtime, frame);
     const bool allowed = frame != nullptr && feedback_frame_usable(*frame) &&
         runtime.session_running() && runtime.session_focused() && gameplay_active();
     AcquireSRWLockExclusive(&g_mailbox_lock);
@@ -95,6 +99,7 @@ void service_firing_haptics(
     const bool applied = runtime.ApplyHaptic(
         wawvr::xr::Hand::Right, kFiringHapticAmplitude,
         kFiringHapticDurationSeconds, 0.0F);
+    if (applied) notify_firing_haptic_overrode_reload();
     g_pulse_may_be_active = applied || g_pulse_may_be_active;
     if (diagnostic_logging_enabled() && g_diagnostic_pulses++ < 64) {
         stereo_diagnostic_log(

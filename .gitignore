@@ -43,6 +43,8 @@ PeZBOTWAW_005p.zip
 *.VC.db
 *.VC.opendb
 .vs/
+bin/
+obj/
 
 # Local CMake configuration.
 CMakeUserPresets.json

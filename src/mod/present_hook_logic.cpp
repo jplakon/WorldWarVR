@@ -260,7 +260,14 @@ bool should_pack_stereo_scene(
     const std::int32_t active_connection_state,
     const std::uint32_t key_catchers) noexcept {
     if (!multiplayer_profile) {
-        return true;
+        // SP native pause/options use the full-frame UI projection. A packed
+        // gameplay scene leaves half-width scene state underneath that UI,
+        // suppressing its controls even before the image reaches OpenXR.
+        // Do not extend the exception to console-only, loading, or invalid
+        // presentation states: those retain the established SP scene policy.
+        return !(state_valid &&
+                 connection_state == active_connection_state &&
+                 (key_catchers & kT4UiKeyCatcher) != 0);
     }
     return state_valid &&
            connection_state == active_connection_state &&

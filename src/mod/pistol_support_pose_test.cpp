@@ -167,6 +167,46 @@ void test_bounded_native_name_buffer() {
     }
 }
 
+void test_support_offset_uses_weapon_left_not_world_right() {
+    // Independent weapon roll/yaw and anatomical grip rotations exercise the
+    // reported lateral-placement symptom without replacing the real mesh with
+    // a guessed calibration. The attachment proxy must remain on weapon-left.
+    for (int weapon_index = 0; weapon_index < 12; ++weapon_index) {
+        const float step = static_cast<float>(weapon_index);
+        const Basis3f weapon = rotation(0.23F * step, -0.51F * step, 0.73F * step);
+        for (int grip_index = 0; grip_index < 6; ++grip_index) {
+            const float grip_step = static_cast<float>(grip_index);
+            const Basis3f grip = rotation(-0.32F * grip_step, 0.43F * grip_step, 0.61F);
+            const Basis3f right_attachment = rotation(0.2F, -0.5F, 0.8F);
+            const Basis3f left_attachment = rotation(-0.4F, 1.7F, -0.9F);
+            const Vec3f right_offset{-0.7F, 0.6F, 1.2F};
+            const Vec3f left_offset{0.9F, -0.5F, 1.4F};
+            const Vec3f firing_palm{7.0F, -3.0F, 11.0F};
+            const auto wrist_delta = compose(grip, right_offset);
+            const EnginePose right{{firing_palm.x + wrist_delta.x,
+                firing_palm.y + wrist_delta.y, firing_palm.z + wrist_delta.z},
+                compose_axes(grip, right_attachment)};
+            const auto preserved = right;
+            EnginePose support{};
+            check(calculate_pistol_support_hand_pose(right, right_attachment,
+                      right_offset, left_attachment, left_offset, weapon, &support),
+                  "independently rolled pistol and anatomical grip produce a support pose");
+            const auto left_delta = compose(grip, left_offset);
+            const Vec3f separation{support.position.x - left_delta.x - firing_palm.x,
+                support.position.y - left_delta.y - firing_palm.y,
+                support.position.z - left_delta.z - firing_palm.z};
+            const auto projected = [&separation](const Vec3f& axis) {
+                return separation.x * axis.x + separation.y * axis.y + separation.z * axis.z;
+            };
+            check(near(projected(weapon.forward), 0.5F) &&
+                      near(projected(weapon.left), 1.0F) &&
+                      near(projected(weapon.up), -0.25F),
+                  "support proxy is exactly one inch weapon-left under independent roll/yaw");
+            check(near(right, preserved), "support placement cannot alter the firing-hand aim or origin");
+        }
+    }
+}
+
 void test_rigid_world_transform_invariance() {
     const EnginePose right{{3, -7, 11}, rotation(0.2F, 0.7F, -0.4F)};
     const Basis3f right_attachment = rotation(0.3F, -0.2F, 0.6F);
@@ -249,6 +289,7 @@ int main() {
     test_exact_pistol_identities();
     test_bounded_native_name_buffer();
     test_palm_spacing_and_mirrored_attachments();
+    test_support_offset_uses_weapon_left_not_world_right();
     test_rigid_world_transform_invariance();
     test_invalid_input_preserves_output();
     return failures == 0 ? 0 : 1;

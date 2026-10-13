@@ -12,6 +12,7 @@
 #include "manual_reload_controller_logic.hpp"
 #include "peer_thread_quiescence.hpp"
 #include "resident_page_access.hpp"
+#include "reload_feedback.hpp"
 #include "stereo_diagnostics.hpp"
 #include "synthetic_scene_slots.hpp"
 #include "t4_layout_selector.hpp"
@@ -582,6 +583,8 @@ struct PreSkinScratch final {
 };
 
 struct BoltActionCommitWitness final {
+    ManualStripperClipCommitKey key{};
+    bool verified{};
     std::uint64_t generation{};
     const void* player_state{};
     std::int32_t weapon_index{};
@@ -637,8 +640,28 @@ std::array<std::atomic<const XSurface*>, kMaximumPreSkinActionSurfaces>
 std::atomic<NativeCommitPhase> g_native_commit_phase{
     NativeCommitPhase::idle};
 std::atomic<std::uint64_t> g_native_commit_publication_generation{0};
+std::atomic<std::uint64_t> g_native_commit_request_serial{0};
+std::atomic<std::uint64_t> g_bolt_commit_started_at_milliseconds{0};
 std::atomic<std::uint64_t>
     g_detachable_magazine_commit_completed_at_milliseconds{0};
+SRWLOCK g_native_commit_gate = SRWLOCK_INIT;
+ManualStripperClipFanoutState g_bolt_commit_fanout{};
+ManualStripperClipRequestGate g_bolt_commit_request_gate{};
+// Advanced only by a physical CommitRequested event, not the controller's
+// repeated Committing output or its resettable reload generation.
+std::uint64_t g_bolt_physical_clip_serial{};
+std::uintptr_t g_reload_predicted_player_state = 0;
+std::uintptr_t g_reload_local_player_entity = 0;
+// Exact SP 1.7 layout, also used by weapon_hook's validated gentity layout.
+constexpr std::size_t kReloadLocalPlayerClientPointerOffset = 0x180;
+
+class NativeCommitGuard final {
+public:
+    NativeCommitGuard() noexcept { AcquireSRWLockExclusive(&g_native_commit_gate); }
+    ~NativeCommitGuard() { ReleaseSRWLockExclusive(&g_native_commit_gate); }
+    NativeCommitGuard(const NativeCommitGuard&) = delete;
+    NativeCommitGuard& operator=(const NativeCommitGuard&) = delete;
+};
 std::uintptr_t g_original_begin_reload = 0;
 std::uintptr_t g_original_pre_skin_surface = 0;
 std::uintptr_t g_reload_clip = 0;
@@ -655,6 +678,9 @@ SyntheticSceneIndexPointers g_scene_index_pointers{};
 ManualReloadControllerState g_controller_state{};
 Kar98BoltActionState g_bolt_state{};
 MagazineChargingState g_magazine_charging_state{};
+// Control ownership may be released before a spring return finishes. Keep a
+// separate feedback recipient so that completion stays in the initiating hand.
+ReloadFeedbackHand g_magazine_feedback_action_hand{ReloadFeedbackHand::Right};
 bool g_empty_reload_armed{};
 std::uint64_t g_magazine_charging_last_update_milliseconds{};
 RuntimeVisualState g_visual_state{};
@@ -671,6 +697,8 @@ std::uint64_t g_clip_asset_source_generation{1};
 std::mutex g_state_mutex;
 thread_local PreSkinScratch g_pre_skin_scratch{};
 thread_local BoltActionCommitWitness g_bolt_action_commit_witness{};
+thread_local ManualStripperClipCommitKey g_bolt_action_claim_key{};
+thread_local ManualStripperClipCommitKey g_native_commit_callback_key{};
 
 void begin_active_weapon_publication_locked() noexcept {
     // All ordinary writers hold g_state_mutex, so the generation is even here.
@@ -1352,7 +1380,10 @@ revalidate_active_magazine_gameplay_weapon(
                validated_generation, one_call_identity) != nullptr;
 }
 
-[[nodiscard]] bool publish_native_commit_request_locked() noexcept {
+[[nodiscard]] bool publish_native_commit_request_locked(
+    const bool bolt_clip = false,
+    const std::uint64_t physical_clip_serial = 0) noexcept {
+    const NativeCommitGuard commit_guard;
     const std::uint64_t generation =
         g_active_weapon_publication_generation.load(
             std::memory_order_acquire);
@@ -1361,11 +1392,16 @@ revalidate_active_magazine_gameplay_weapon(
             NativeCommitPhase::idle) {
         return false;
     }
+    if (bolt_clip && !begin_manual_stripper_clip_request(
+            physical_clip_serial, &g_bolt_commit_request_gate)) return false;
     // The render thread is the sole request publisher under g_state_mutex.
     // Publish the token first so a command thread acquiring `requested` can
     // never observe an unkeyed handoff.
     g_native_commit_publication_generation.store(
         generation, std::memory_order_release);
+    g_native_commit_request_serial.fetch_add(1, std::memory_order_acq_rel);
+    g_bolt_commit_started_at_milliseconds.store(0, std::memory_order_release);
+    g_bolt_commit_fanout = {};
     g_detachable_magazine_commit_completed_at_milliseconds.store(
         0, std::memory_order_release);
     NativeCommitPhase idle = NativeCommitPhase::idle;
@@ -1380,6 +1416,7 @@ revalidate_active_magazine_gameplay_weapon(
 }
 
 [[nodiscard]] bool cancel_native_commit_request_locked() noexcept {
+    const NativeCommitGuard commit_guard;
     NativeCommitPhase requested = NativeCommitPhase::requested;
     if (g_native_commit_phase.compare_exchange_strong(
             requested, NativeCommitPhase::idle,
@@ -1395,7 +1432,7 @@ revalidate_active_magazine_gameplay_weapon(
     return requested == NativeCommitPhase::idle;
 }
 
-[[nodiscard]] bool consume_native_commit_completion_locked() noexcept {
+[[nodiscard]] bool consume_native_commit_completion_under_gate_locked() noexcept {
     const std::uint64_t generation =
         g_active_weapon_publication_generation.load(
             std::memory_order_acquire);
@@ -1433,6 +1470,11 @@ revalidate_active_magazine_gameplay_weapon(
     return true;
 }
 
+[[nodiscard]] bool consume_native_commit_completion_locked() noexcept {
+    const NativeCommitGuard commit_guard;
+    return consume_native_commit_completion_under_gate_locked();
+}
+
 [[nodiscard]] bool
 consume_detachable_magazine_commit_completion_locked() noexcept {
     if (g_native_commit_phase.load(std::memory_order_acquire) !=
@@ -1449,6 +1491,20 @@ consume_detachable_magazine_commit_completion_locked() noexcept {
         return false;
     }
     return consume_native_commit_completion_locked();
+}
+
+[[nodiscard]] bool bolt_commit_replay_window_open(
+    const std::uint64_t now) noexcept {
+    const auto started = g_bolt_commit_started_at_milliseconds.load(
+        std::memory_order_acquire);
+    return started != 0 && now >= started &&
+        now - started < kManualStripperClipFanoutMilliseconds;
+}
+
+[[nodiscard]] bool consume_bolt_commit_completion_locked() noexcept {
+    const NativeCommitGuard commit_guard;
+    if (bolt_commit_replay_window_open(GetTickCount64())) return false;
+    return consume_native_commit_completion_under_gate_locked();
 }
 
 [[nodiscard]] bool read_material_name(
@@ -5615,6 +5671,240 @@ extern "C" void* __cdecl select_kar98_bolt_pre_skin_dobj(
     return g_pre_skin_scratch.dobj.data();
 }
 
+[[nodiscard]] bool simulator_clip_diagnostics_enabled() noexcept {
+    static const bool enabled = []() noexcept {
+        const DWORD previous_error = GetLastError();
+        std::array<wchar_t, 2> flag{};
+        std::array<wchar_t, 1024> runtime{};
+        const bool requested = GetEnvironmentVariableW(
+            L"WAWVR_CLIP_DIAGNOSTICS", flag.data(),
+            static_cast<DWORD>(flag.size())) == 1 && flag[0] == L'1';
+        const DWORD runtime_length = requested
+            ? GetEnvironmentVariableW(
+                  L"XR_RUNTIME_JSON", runtime.data(),
+                  static_cast<DWORD>(runtime.size()))
+            : 0;
+        const bool result = requested && runtime_length != 0 &&
+            runtime_length < runtime.size() &&
+            std::wcsstr(runtime.data(), L"openxr_simulator") != nullptr;
+        SetLastError(previous_error);
+        return result;
+    }();
+    return enabled;
+}
+
+struct ClipDiagnosticGeometry final {
+    wawvr::xr::EnginePose right_world{};
+    wawvr::xr::EnginePose left_world{};
+    wawvr::xr::EnginePose clip_world{};
+    wawvr::xr::Vec3f right_head_local{};
+    wawvr::xr::Vec3f left_head_local{};
+    wawvr::xr::Vec3f receiver{};
+    wawvr::xr::Vec3f closed_bolt_anchor{};
+    wawvr::xr::Vec3f current_bolt_handle{};
+    float right_forward{};
+    float left_forward{};
+    bool right_pose_valid{};
+    bool left_pose_valid{};
+    bool receiver_valid{};
+    bool bolt_anchor_valid{};
+    bool in_receiver{};
+    bool right_near_bolt{};
+    bool left_near_bolt{};
+    bool input_owned{};
+    bool feed_squeeze_held{};
+    StripperClipFeedHand feed_hand{StripperClipFeedHand::None};
+    bool feed_in_waist{};
+};
+
+// Observation only, under the caller's g_state_mutex. Normal/headset launches
+// never enter this function. Keep transitions across ownership changes (the
+// steady-aim aggregate trace deliberately excludes them), and retain idle
+// geometry so a simulator can place a hand without guessing world/XR axes.
+void log_simulator_clip_diagnostic(
+    const BoltActionWeaponProfile& profile,
+    const ManualReloadViewmodelContext& context,
+    const void* const viewmodel_pose,
+    const ClipDiagnosticGeometry& geometry,
+    const ManualReloadControllerUpdate& update,
+    const Kar98BoltActionUpdate& bolt_update,
+    const BoltActionAmmoSnapshot& ammo,
+    const bool native_commit_completed,
+    const bool shot_fired) noexcept {
+    constexpr std::uint32_t kMaximumSamples = 4'000; // Three rows: <=12,000.
+    static std::uint32_t sample_count = 0;
+    static bool physical_bolt_seen = false;
+    static bool previous_valid = false;
+    static std::uint64_t previous_generation = 0;
+    static std::uint64_t previous_frame = 0;
+    static std::uint64_t last_log_milliseconds = 0;
+    static std::array<std::uint64_t, 29> previous_state{};
+    static std::array<float, 18> previous_pose{};
+    if (sample_count >= kMaximumSamples) {
+        return;
+    }
+
+    const auto& frame = context.controller.frame;
+    const auto& right = frame.actions.hands[
+        static_cast<std::uint32_t>(wawvr::xr::Hand::Right)];
+    const auto& left = frame.actions.hands[
+        static_cast<std::uint32_t>(wawvr::xr::Hand::Left)];
+    const auto commit_phase = g_native_commit_phase.load(std::memory_order_acquire);
+    const bool reserve_right = g_reserve_right_grip.load(std::memory_order_acquire);
+    const bool reserve_left = g_reserve_left_grip.load(std::memory_order_acquire);
+    const bool in_waist = geometry.feed_in_waist;
+    const bool clip_latched = g_controller_state.stripper_clip_hand !=
+        StripperClipFeedHand::None;
+    const std::array<std::uint64_t, 29> state{
+        static_cast<std::uint64_t>(context.weapon_definition_address),
+        static_cast<std::uint64_t>(context.weapon_index),
+        static_cast<std::uint64_t>(update.reload.stage),
+        static_cast<std::uint64_t>(update.reload.event),
+        static_cast<std::uint64_t>(bolt_update.event),
+        static_cast<std::uint64_t>(commit_phase),
+        native_commit_completed, shot_fired,
+        context.right_rifle_gripped, context.left_rifle_gripped,
+        reserve_right, reserve_left, geometry.input_owned,
+        geometry.right_pose_valid, geometry.left_pose_valid,
+        geometry.in_receiver, in_waist, geometry.feed_squeeze_held,
+        g_bolt_state.bolt_grabbed, g_bolt_state.manipulating_hand_selected,
+        g_bolt_state.manipulating_left_hand,
+        g_bolt_state.awaiting_controls_release,
+        g_bolt_state.trigger_was_held, g_bolt_state.left_trigger_was_held,
+        ammo.valid, static_cast<std::uint64_t>(ammo.commit.loaded),
+        static_cast<std::uint64_t>(ammo.commit.reserve),
+        static_cast<std::uint64_t>(geometry.feed_hand), clip_latched,
+    };
+    wawvr::xr::Vec3f root_origin{};
+    const bool root_readable = accessible_range(viewmodel_pose, kPoseSize, false);
+    if (root_readable) {
+        std::memcpy(&root_origin,
+            static_cast<const std::uint8_t*>(viewmodel_pose) + kPoseOriginOffset,
+            sizeof(root_origin));
+    }
+    const auto& axis = context.weapon_axis;
+    const auto& grip = context.rifle_grip_world;
+    const auto& muzzle = context.muzzle_world;
+    const std::array<float, 18> pose{
+        root_origin.x, root_origin.y, root_origin.z,
+        axis.forward.x, axis.forward.y, axis.forward.z,
+        axis.left.x, axis.left.y, axis.left.z,
+        axis.up.x, axis.up.y, axis.up.z,
+        grip.x, grip.y, grip.z, muzzle.x, muzzle.y, muzzle.z,
+    };
+    const bool state_changed = !previous_valid || state != previous_state;
+    const bool same_publication = previous_valid &&
+        previous_generation == context.controller.generation &&
+        previous_frame == frame.frame_id;
+    const bool same_publication_pose_changed =
+        same_publication && pose != previous_pose;
+    previous_valid = true;
+    previous_generation = context.controller.generation;
+    previous_frame = frame.frame_id;
+    previous_state = state;
+    previous_pose = pose;
+    physical_bolt_seen = physical_bolt_seen ||
+        bolt_update.event == Kar98BoltEvent::Grabbed;
+    const std::uint64_t now = GetTickCount64();
+    const std::uint64_t interval = physical_bolt_seen ? 100 : 500;
+    if (!state_changed && !same_publication_pose_changed &&
+        (same_publication || (now >= last_log_milliseconds &&
+                             now - last_log_milliseconds < interval))) {
+        return;
+    }
+    last_log_milliseconds = now;
+    const auto sample = ++sample_count;
+    const auto& r = geometry.right_world.position;
+    const auto& l = geometry.left_world.position;
+    const auto& clip = geometry.clip_world.position;
+    const auto& receiver = geometry.receiver;
+    const auto& closed = geometry.closed_bolt_anchor;
+    const auto& handle = geometry.current_bolt_handle;
+    const auto& rr = right.grip.pose;
+    const auto& lr = left.grip.pose;
+    const auto& head = frame.head_center;
+    const auto& anchor = context.controller.tracking_anchor;
+    const auto& camera = context.camera_origin;
+    const auto& camera_axis = context.camera_axis;
+    const auto& clip_axis = geometry.clip_world.axis;
+
+    stereo_diagnostic_log(
+        "ClipDiag state sample=%u final=%d ms=%llu generation=%llu frame=%llu sequence=%llu publicationMs=%llu weapon=%s index=%d definition=%08X commandTime=%d retained=%d/%d input=%d poses=%d/%d squeeze=%.4f/%.4f squeezeActive=%d/%d trigger=%.4f/%.4f triggerActive=%d/%d reload=%u event=%u reloadGeneration=%llu active=%d request=%d completed=%d commitPhase=%u boltEvent=%u fraction=%.6f grabbed=%d open=%d cycle=%d awaitingRelease=%d boltHand=%d reserve=%d/%d feedHeld=%d waist=%d receiver=%d nearBolt=%d/%d shot=%d ammoValid=%d ammo=%d/%d clipSize=%d weaponState=%d changed=%d samePublicationPose=%d clipHand=%d clipLatched=%d",
+        sample, sample == kMaximumSamples ? 1 : 0,
+        static_cast<unsigned long long>(now),
+        static_cast<unsigned long long>(context.controller.generation),
+        static_cast<unsigned long long>(frame.frame_id),
+        static_cast<unsigned long long>(frame.actions.sequence),
+        static_cast<unsigned long long>(context.controller.publication_milliseconds),
+        profile.internal_weapon_name, context.weapon_index,
+        context.weapon_definition_address, context.player_command_time,
+        context.right_rifle_gripped ? 1 : 0, context.left_rifle_gripped ? 1 : 0,
+        geometry.input_owned ? 1 : 0,
+        geometry.right_pose_valid ? 1 : 0, geometry.left_pose_valid ? 1 : 0,
+        right.squeeze.current, left.squeeze.current,
+        right.squeeze.active ? 1 : 0, left.squeeze.active ? 1 : 0,
+        right.trigger.current, left.trigger.current,
+        right.trigger.active ? 1 : 0, left.trigger.active ? 1 : 0,
+        static_cast<unsigned>(update.reload.stage),
+        static_cast<unsigned>(update.reload.event),
+        static_cast<unsigned long long>(g_controller_state.reload.generation),
+        update.reload.manual_reload_active ? 1 : 0,
+        update.reload.request_native_commit ? 1 : 0,
+        native_commit_completed ? 1 : 0, static_cast<unsigned>(commit_phase),
+        static_cast<unsigned>(bolt_update.event), bolt_update.bolt_fraction,
+        bolt_update.bolt_grabbed ? 1 : 0, bolt_update.action_open ? 1 : 0,
+        bolt_update.cycle_required ? 1 : 0,
+        g_bolt_state.awaiting_controls_release ? 1 : 0,
+        !g_bolt_state.manipulating_hand_selected ? -1 :
+            g_bolt_state.manipulating_left_hand ? 1 : 0,
+        reserve_right ? 1 : 0, reserve_left ? 1 : 0,
+        geometry.feed_squeeze_held ? 1 : 0, in_waist ? 1 : 0,
+        geometry.in_receiver ? 1 : 0, geometry.right_near_bolt ? 1 : 0,
+        geometry.left_near_bolt ? 1 : 0, shot_fired ? 1 : 0,
+        ammo.valid ? 1 : 0, ammo.commit.loaded, ammo.commit.reserve,
+        ammo.commit.clip_size, ammo.commit.weapon_state,
+        state_changed ? 1 : 0, same_publication_pose_changed ? 1 : 0,
+        static_cast<int>(geometry.feed_hand), clip_latched ? 1 : 0);
+    stereo_diagnostic_log(
+        "ClipDiag world sample=%u rootValid=%d root=%.6g,%.6g,%.6g forward=%.6g,%.6g,%.6g left=%.6g,%.6g,%.6g up=%.6g,%.6g,%.6g grip=%.6g,%.6g,%.6g muzzleValid=%d muzzle=%.6g,%.6g,%.6g right=%.6g,%.6g,%.6g leftHand=%.6g,%.6g,%.6g clip=%.6g,%.6g,%.6g receiverValid=%d receiver=%.6g,%.6g,%.6g boltValid=%d closedBolt=%.6g,%.6g,%.6g handle=%.6g,%.6g,%.6g handForward=%.6g/%.6g distance=%.6g/%.6g/%.6g travel=%.6g grabRadius=%.6g insertRadius=%.6g feedOffset=%.6g,%.6g,%.6g receiverSegment=%.6g/%.6g/%.6g",
+        sample, root_readable && finite_vector(root_origin) ? 1 : 0,
+        root_origin.x, root_origin.y, root_origin.z,
+        axis.forward.x, axis.forward.y, axis.forward.z,
+        axis.left.x, axis.left.y, axis.left.z, axis.up.x, axis.up.y, axis.up.z,
+        grip.x, grip.y, grip.z, context.muzzle_valid ? 1 : 0,
+        muzzle.x, muzzle.y, muzzle.z, r.x, r.y, r.z, l.x, l.y, l.z,
+        clip.x, clip.y, clip.z, geometry.receiver_valid ? 1 : 0,
+        receiver.x, receiver.y, receiver.z, geometry.bolt_anchor_valid ? 1 : 0,
+        closed.x, closed.y, closed.z, handle.x, handle.y, handle.z,
+        geometry.right_forward, geometry.left_forward,
+        distance(r, handle), distance(l, handle), distance(clip, receiver),
+        profile.bolt_travel_units, profile.bolt_grab_radius_units,
+        profile.insertion_radius_units, profile.feed_device_hand_offset.x,
+        profile.feed_device_hand_offset.y, profile.feed_device_hand_offset.z,
+        profile.receiver_segment_minimum, profile.receiver_segment_maximum,
+        profile.receiver_top_offset);
+    stereo_diagnostic_log(
+        "ClipDiag xr sample=%u right=%.6g,%.6g,%.6g rightQ=%.6g,%.6g,%.6g,%.6g left=%.6g,%.6g,%.6g leftQ=%.6g,%.6g,%.6g,%.6g head=%.6g,%.6g,%.6g headQ=%.6g,%.6g,%.6g,%.6g anchor=%.6g,%.6g,%.6g anchorQ=%.6g,%.6g,%.6g,%.6g camera=%.6g,%.6g,%.6g cameraF=%.6g,%.6g,%.6g cameraL=%.6g,%.6g,%.6g cameraU=%.6g,%.6g,%.6g headLocalR=%.6g,%.6g,%.6g headLocalL=%.6g,%.6g,%.6g clipF=%.6g,%.6g,%.6g clipL=%.6g,%.6g,%.6g clipU=%.6g,%.6g,%.6g",
+        sample, rr.position.x, rr.position.y, rr.position.z,
+        rr.orientation.x, rr.orientation.y, rr.orientation.z, rr.orientation.w,
+        lr.position.x, lr.position.y, lr.position.z,
+        lr.orientation.x, lr.orientation.y, lr.orientation.z, lr.orientation.w,
+        head.position.x, head.position.y, head.position.z,
+        head.orientation.x, head.orientation.y, head.orientation.z, head.orientation.w,
+        anchor.position.x, anchor.position.y, anchor.position.z,
+        anchor.orientation.x, anchor.orientation.y, anchor.orientation.z, anchor.orientation.w,
+        camera.x, camera.y, camera.z,
+        camera_axis.forward.x, camera_axis.forward.y, camera_axis.forward.z,
+        camera_axis.left.x, camera_axis.left.y, camera_axis.left.z,
+        camera_axis.up.x, camera_axis.up.y, camera_axis.up.z,
+        geometry.right_head_local.x, geometry.right_head_local.y,
+        geometry.right_head_local.z, geometry.left_head_local.x,
+        geometry.left_head_local.y, geometry.left_head_local.z,
+        clip_axis.forward.x, clip_axis.forward.y, clip_axis.forward.z,
+        clip_axis.left.x, clip_axis.left.y, clip_axis.left.z,
+        clip_axis.up.x, clip_axis.up.y, clip_axis.up.z);
+}
+
 [[nodiscard]] bool receiver_position(
     const ManualReloadViewmodelContext& context,
     const BoltActionWeaponProfile& profile,
@@ -5708,8 +5998,69 @@ extern "C" void* __cdecl select_kar98_bolt_pre_skin_dobj(
     return finite_vector(*closed_anchor) && finite_vector(*current_handle);
 }
 
-void reject_claimed_bolt_action_commit() noexcept {
+[[nodiscard]] int local_bolt_player_state_kind(const void* const player_state) noexcept {
+    if (player_state == nullptr) return 0;
+    if (reinterpret_cast<std::uintptr_t>(player_state) ==
+        g_reload_predicted_player_state) return 1;
+    const auto pointer_address = g_reload_local_player_entity +
+        kReloadLocalPlayerClientPointerOffset;
+    if (g_reload_local_player_entity == 0 ||
+        !accessible_range(reinterpret_cast<const void*>(pointer_address),
+                          sizeof(std::uint32_t), false)) return 0;
+    std::uint32_t client = 0;
+    std::memcpy(&client, reinterpret_cast<const void*>(pointer_address), sizeof(client));
+    return client != 0 && reinterpret_cast<std::uintptr_t>(player_state) == client ? 2 : 0;
+}
+
+[[nodiscard]] bool bolt_claim_is_current(
+    const ManualStripperClipCommitKey& key) noexcept {
+    return key.request_serial != 0 && key.session_epoch != 0 &&
+        key.publication_generation != 0 &&
+        (key.publication_generation & 1U) == 0 &&
+        g_enabled.load(std::memory_order_acquire) &&
+        !g_automatic_reload.load(std::memory_order_acquire) &&
+        key.session_epoch == g_manual_reload_session_epoch.load(std::memory_order_acquire) &&
+        key.publication_generation ==
+            g_active_weapon_publication_generation.load(std::memory_order_acquire) &&
+        key.publication_generation ==
+            g_native_commit_publication_generation.load(std::memory_order_acquire) &&
+        key.request_serial == g_native_commit_request_serial.load(std::memory_order_acquire) &&
+        key.shot_generation == g_local_shot_generation.load(std::memory_order_acquire);
+}
+
+void log_simulator_bolt_commit_pass(
+    const char* const stage, const char* const decision,
+    const void* const player_state, const ManualStripperClipCommitKey& key,
+    const BoltActionAmmoSnapshot* const ammo = nullptr) noexcept {
+    if (!simulator_clip_diagnostics_enabled()) return;
+    static std::atomic<unsigned> rows{0};
+    if (rows.fetch_add(1, std::memory_order_relaxed) >= 256) return;
+    std::int32_t command_time = -1;
+    if (accessible_range(player_state, sizeof(command_time), false)) {
+        std::memcpy(&command_time, player_state, sizeof(command_time));
+    }
+    stereo_diagnostic_log(
+        "ClipCommit stage=%s decision=%s ps=%p localKind=%d commandTime=%d phase=%u serial=%llu epoch=%llu generation=%llu shot=%llu weapon=%d definition=%08X ammoIndex=%d clipIndex=%d loaded=%d reserve=%d startedMs=%llu nowMs=%llu",
+        stage, decision, player_state, local_bolt_player_state_kind(player_state), command_time,
+        static_cast<unsigned>(g_native_commit_phase.load(std::memory_order_acquire)),
+        static_cast<unsigned long long>(key.request_serial),
+        static_cast<unsigned long long>(key.session_epoch),
+        static_cast<unsigned long long>(key.publication_generation),
+        static_cast<unsigned long long>(key.shot_generation), key.weapon_index,
+        key.definition_address, ammo != nullptr ? ammo->ammo_index : -1,
+        ammo != nullptr ? ammo->clip_index : -1,
+        ammo != nullptr ? ammo->commit.loaded : -1,
+        ammo != nullptr ? ammo->commit.reserve : -1,
+        static_cast<unsigned long long>(g_bolt_commit_started_at_milliseconds.load(std::memory_order_acquire)),
+        static_cast<unsigned long long>(GetTickCount64()));
+}
+
+// Caller holds g_native_commit_gate. An outgoing native call may fail after a
+// reset/new request; its stale witness must never cancel the new transaction.
+void reject_claimed_bolt_action_commit_locked() noexcept {
     g_bolt_action_commit_witness = {};
+    if (!bolt_claim_is_current(g_bolt_action_claim_key)) return;
+    if (g_bolt_commit_fanout.initialized) g_bolt_commit_fanout.failed = true;
     NativeCommitPhase claimed = NativeCommitPhase::claimed;
     if (g_native_commit_phase.compare_exchange_strong(
             claimed, NativeCommitPhase::idle,
@@ -5723,12 +6074,14 @@ void reject_claimed_bolt_action_commit() noexcept {
 
 extern "C" int __cdecl prepare_manual_bolt_action_commit(
     void* const player_state) noexcept {
+    const NativeCommitGuard commit_guard;
     g_bolt_action_commit_witness = {};
-    if (!g_enabled.load(std::memory_order_acquire) ||
+    if (!bolt_claim_is_current(g_bolt_action_claim_key) ||
+        local_bolt_player_state_kind(player_state) == 0 ||
         g_native_commit_phase.load(std::memory_order_acquire) !=
             NativeCommitPhase::claimed ||
         !accessible_range(player_state, kPlayerStateMinimumSpan, false)) {
-        reject_claimed_bolt_action_commit();
+        reject_claimed_bolt_action_commit_locked();
         return 0;
     }
 
@@ -5755,22 +6108,32 @@ extern "C" int __cdecl prepare_manual_bolt_action_commit(
                 std::memory_order_acquire) ||
         !owned_c_string_equals(
             identity.name, profile->internal_weapon_name)) {
-        reject_claimed_bolt_action_commit();
+        reject_claimed_bolt_action_commit_locked();
         return 0;
     }
 
     const BoltActionAmmoSnapshot ammo =
         read_bolt_action_ammo(player_state, identity);
-    const ManualStripperClipCommitPlan plan = ammo.valid
-        ? plan_manual_stripper_clip_commit(ammo.commit)
-        : ManualStripperClipCommitPlan{};
-    if (!plan.valid || plan.native_reload_clip_calls <= 0 ||
-        plan.native_reload_clip_calls > kManualStripperClipCapacity) {
-        reject_claimed_bolt_action_commit();
+    auto key = g_bolt_action_claim_key;
+    key.ammo_index = ammo.ammo_index;
+    key.clip_index = ammo.clip_index;
+    const auto plan = ammo.valid ? plan_manual_stripper_clip_fanout(
+        {key, GetTickCount64(), reinterpret_cast<std::uintptr_t>(player_state), ammo.commit},
+        &g_bolt_commit_fanout) : ManualStripperClipFanoutPlan{};
+    log_simulator_bolt_commit_pass("prepare",
+        !plan.valid ? "reject" : plan.already_applied ? "already-post" : "transfer",
+        player_state, key, &ammo);
+    if (!plan.valid || (!plan.already_applied && plan.native_reload_clip_calls <= 0) ||
+        plan.native_reload_clip_calls > kManualStripperClipCapacity ||
+        !bolt_claim_is_current(key) || local_bolt_player_state_kind(player_state) == 0) {
+        reject_claimed_bolt_action_commit_locked();
         return 0;
     }
+    g_bolt_commit_started_at_milliseconds.store(
+        g_bolt_commit_fanout.started_at_milliseconds, std::memory_order_release);
 
     g_bolt_action_commit_witness = {
+        .key = key,
         .generation = validated_generation,
         .player_state = player_state,
         .weapon_index = weapon,
@@ -5778,19 +6141,21 @@ extern "C" int __cdecl prepare_manual_bolt_action_commit(
         .ammo_index = ammo.ammo_index,
         .clip_index = ammo.clip_index,
         .clip_size = ammo.commit.clip_size,
-        .expected_reserve =
-            ammo.commit.reserve - plan.rounds_to_transfer,
-        .expected_loaded =
-            ammo.commit.loaded + plan.rounds_to_transfer,
+        .expected_reserve = plan.expected_reserve,
+        .expected_loaded = plan.expected_loaded,
     };
-    return plan.native_reload_clip_calls;
+    // -1 is an explicit no-ammo-call result. The bridge still verifies and
+    // finalizes that exact post-state; zero remains failure/suppress.
+    return plan.already_applied ? -1 : plan.native_reload_clip_calls;
 }
 
 extern "C" int __cdecl verify_manual_bolt_action_commit(
     void* const player_state) noexcept {
+    const NativeCommitGuard commit_guard;
     const BoltActionCommitWitness witness =
         g_bolt_action_commit_witness;
-    bool verified = witness.generation != 0 &&
+    bool verified = witness.generation != 0 && bolt_claim_is_current(witness.key) &&
+        local_bolt_player_state_kind(player_state) != 0 &&
         player_state == witness.player_state &&
         g_enabled.load(std::memory_order_acquire) &&
         g_native_commit_phase.load(std::memory_order_acquire) ==
@@ -5832,13 +6197,23 @@ extern "C" int __cdecl verify_manual_bolt_action_commit(
             ammo.commit.reserve == witness.expected_reserve &&
             ammo.commit.loaded == witness.expected_loaded;
     }
-    g_bolt_action_commit_witness = {};
+    if (verified) {
+        verified = verify_manual_stripper_clip_fanout(
+            {witness.key, GetTickCount64(), reinterpret_cast<std::uintptr_t>(player_state), ammo.commit},
+            &g_bolt_commit_fanout) && bolt_claim_is_current(witness.key) &&
+            local_bolt_player_state_kind(player_state) != 0;
+    } else if (witness.key == g_bolt_commit_fanout.key) {
+        g_bolt_commit_fanout.failed = true;
+    }
+    log_simulator_bolt_commit_pass("verify", verified ? "verified" : "reject",
+                                   player_state, witness.key, &ammo);
     if (!verified) {
         WAWVR_STEREO_DIAG_ONCE(
             "ReloadDiag rejected a physical stripper-clip commit whose bounded native calls did not produce the exact guarded ammo transfer");
-        reject_claimed_bolt_action_commit();
+        reject_claimed_bolt_action_commit_locked();
         return 0;
     }
+    g_bolt_action_commit_witness.verified = true;
     return 1;
 }
 
@@ -5868,6 +6243,14 @@ extern "C" int __cdecl classify_manual_reload_begin(
         : nullptr;
     if (bolt_profile == nullptr && magazine_profile == nullptr) {
         return static_cast<int>(classify_reload_begin_fallback(weapon));
+    }
+    if (magazine_profile != nullptr) {
+        g_bolt_action_claim_key = {};
+        g_bolt_action_commit_witness = {};
+    }
+    if (bolt_profile != nullptr && local_bolt_player_state_kind(player_state) == 0) {
+        log_simulator_bolt_commit_pass("classify", "nonlocal-native", player_state, {});
+        return static_cast<int>(BeginDecision::native);
     }
     if (validated_generation !=
             g_active_weapon_publication_generation.load(
@@ -5901,6 +6284,7 @@ extern "C" int __cdecl classify_manual_reload_begin(
         !g_enabled.load(std::memory_order_acquire)) {
         return static_cast<int>(classify_reload_begin_fallback(weapon));
     }
+    const NativeCommitGuard commit_guard;
     const std::uint64_t commit_generation =
         g_native_commit_publication_generation.load(
             std::memory_order_acquire);
@@ -5924,20 +6308,43 @@ extern "C" int __cdecl classify_manual_reload_begin(
         }
         return static_cast<int>(BeginDecision::suppress);
     }
+    const ManualStripperClipCommitKey claim_key{
+        .session_epoch = g_manual_reload_session_epoch.load(std::memory_order_acquire),
+        .publication_generation = validated_generation,
+        .request_serial = g_native_commit_request_serial.load(std::memory_order_acquire),
+        .shot_generation = g_local_shot_generation.load(std::memory_order_acquire),
+        .weapon_index = weapon,
+        .definition_address = g_active_weapon_definition_address.load(std::memory_order_acquire),
+    };
     if (magazine_profile != nullptr &&
         g_native_commit_phase.load(std::memory_order_acquire) ==
             NativeCommitPhase::completed) {
         // The reload bit is replayed for prediction and authoritative local
         // simulation. PM_ReloadClip is idempotent once this Colt magazine is
         // full, so allow the second pass while the short fanout window lives.
+        g_native_commit_callback_key = claim_key;
         return static_cast<int>(BeginDecision::commit_detachable_magazine);
     }
     NativeCommitPhase expected = NativeCommitPhase::requested;
+    if (bolt_profile != nullptr &&
+        g_native_commit_phase.load(std::memory_order_acquire) == NativeCommitPhase::completed) {
+        if (!bolt_commit_replay_window_open(GetTickCount64())) {
+            log_simulator_bolt_commit_pass("classify", "expired", player_state,
+                                           g_bolt_commit_fanout.key);
+            return static_cast<int>(BeginDecision::suppress);
+        }
+        expected = NativeCommitPhase::completed;
+    }
     const bool claimed = g_native_commit_phase.compare_exchange_strong(
         expected, NativeCommitPhase::claimed,
         std::memory_order_acq_rel, std::memory_order_acquire);
     if (!claimed) {
         return static_cast<int>(BeginDecision::suppress);
+    }
+    g_native_commit_callback_key = claim_key;
+    if (bolt_profile != nullptr) {
+        g_bolt_action_claim_key = claim_key;
+        log_simulator_bolt_commit_pass("classify", "claimed", player_state, claim_key);
     }
     return static_cast<int>(
         magazine_profile != nullptr
@@ -5947,6 +6354,15 @@ extern "C" int __cdecl classify_manual_reload_begin(
 
 extern "C" void __cdecl record_manual_reload_commit(
     void* const player_state) noexcept {
+    const NativeCommitGuard commit_guard;
+    if (!bolt_claim_is_current(g_native_commit_callback_key) ||
+        (g_bolt_action_commit_witness.key.request_serial != 0 &&
+         !bolt_claim_is_current(g_bolt_action_commit_witness.key))) {
+        g_native_commit_callback_key = {};
+        g_bolt_action_claim_key = {};
+        g_bolt_action_commit_witness = {};
+        return;
+    }
     if (g_active_magazine_binding.load(std::memory_order_acquire) != 0) {
         log_simulator_detachable_magazine_commit_snapshot(
             "record", player_state);
@@ -5965,7 +6381,13 @@ extern "C" void __cdecl record_manual_reload_commit(
                 kPlayerStateWeaponOffset,
             sizeof(weapon));
     }
-    const bool correlated = player_readable &&
+    const bool bolt_commit = g_active_weapon_binding.load(std::memory_order_acquire) != 0;
+    const bool bolt_witness_current = !bolt_commit ||
+        (g_bolt_action_commit_witness.verified &&
+         g_bolt_action_commit_witness.player_state == player_state &&
+         bolt_claim_is_current(g_bolt_action_commit_witness.key) &&
+         local_bolt_player_state_kind(player_state) != 0);
+    const bool correlated = bolt_witness_current && player_readable &&
         revalidate_active_manual_gameplay_weapon(
             weapon, 0, &validated_generation) &&
         commit_generation != 0 &&
@@ -5976,6 +6398,10 @@ extern "C" void __cdecl record_manual_reload_commit(
         g_enabled.load(std::memory_order_acquire);
     NativeCommitPhase expected = NativeCommitPhase::claimed;
     if (!correlated) {
+        // An old bolt callback is not allowed to retire a new request, even
+        // if the new request has already reached the same claimed phase.
+        if (g_bolt_action_commit_witness.key.request_serial != 0 &&
+            !bolt_claim_is_current(g_bolt_action_commit_witness.key)) return;
         if (g_native_commit_phase.compare_exchange_strong(
                 expected, NativeCommitPhase::idle,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
@@ -5995,6 +6421,9 @@ extern "C" void __cdecl record_manual_reload_commit(
         const BoltActionWeaponProfile* const profile =
             profile_for_binding(packed, &binding);
         if (profile != nullptr) {
+            log_simulator_bolt_commit_pass("record", "completed", player_state,
+                                           g_bolt_action_commit_witness.key);
+            g_bolt_action_commit_witness = {};
             WAWVR_STEREO_DIAG_ONCE(
                 "ReloadDiag physical %s stripper clip transferred its guarded five-round capacity through bounded PM_ReloadClip calls",
                 profile->diagnostic_name);
@@ -6161,6 +6590,8 @@ extern "C" __declspec(naked) void manual_reload_begin_bridge() noexcept {
         lea esp, [esp + 4]
         test eax, eax
         jz suppress_native
+        cmp eax, -1
+        je manual_bolt_verify
         // The exact retail scoped WeaponDef adds one round per call. The pure
         // plan caps this loop at the physical five-round clip capacity.
         push eax
@@ -6169,6 +6600,7 @@ extern "C" __declspec(naked) void manual_reload_begin_bridge() noexcept {
         dec dword ptr [esp]
         jnz manual_bolt_reload_loop
         lea esp, [esp + 4]
+    manual_bolt_verify:
         push esi
         call verify_manual_bolt_action_commit
         lea esp, [esp + 4]
@@ -6213,6 +6645,7 @@ extern "C" __declspec(naked) void manual_reload_begin_bridge() noexcept {
 #endif
 
 void clear_interaction_state_locked() noexcept {
+    reset_manual_reload_feedback();
     if (g_magazine_visual_state.authored_hidden &&
         !set_authored_magazine_hidden_locked(false)) {
         WAWVR_STEREO_DIAG_ONCE(
@@ -6229,6 +6662,7 @@ void clear_interaction_state_locked() noexcept {
     reset_manual_reload_controller(&g_controller_state);
     reset_kar98_bolt_action(&g_bolt_state);
     reset_magazine_charging(&g_magazine_charging_state);
+    g_magazine_feedback_action_hand = ReloadFeedbackHand::Right;
     g_empty_reload_armed = false;
     g_magazine_charging_last_update_milliseconds = 0;
     g_visual_state.supported = false;
@@ -6253,12 +6687,18 @@ void clear_interaction_state_locked() noexcept {
     g_reserve_left_grip.store(false, std::memory_order_release);
     g_block_new_left_trigger_action.store(false, std::memory_order_release);
     g_shot_pending.store(false, std::memory_order_release);
-    g_native_commit_phase.store(
-        NativeCommitPhase::idle, std::memory_order_release);
-    g_native_commit_publication_generation.store(
-        0, std::memory_order_release);
-    g_detachable_magazine_commit_completed_at_milliseconds.store(
-        0, std::memory_order_release);
+    {
+        const NativeCommitGuard commit_guard;
+        g_native_commit_phase.store(
+            NativeCommitPhase::idle, std::memory_order_release);
+        g_native_commit_publication_generation.store(
+            0, std::memory_order_release);
+        g_detachable_magazine_commit_completed_at_milliseconds.store(
+            0, std::memory_order_release);
+        g_bolt_commit_started_at_milliseconds.store(0, std::memory_order_release);
+        g_bolt_commit_fanout = {};
+        g_bolt_commit_request_gate = {};
+    }
     advance_clip_asset_source_generation_locked();
     finish_active_weapon_publication_locked();
 }
@@ -6337,6 +6777,7 @@ void observe_manual_reload_session(const void* const player_state) noexcept {
 }
 
 void mark_runtime_temporarily_unavailable_locked() noexcept {
+    reset_manual_reload_feedback();
     if (g_active_magazine_binding.load(std::memory_order_acquire) != 0) {
         DetachableMagazineWeaponBinding binding{};
         const auto* const profile = profile_for_magazine_binding(
@@ -7298,6 +7739,30 @@ void update_detachable_magazine_viewmodel_locked(
         update.reload.manual_reload_active ||
             charging_update.reserve_left_grip || left_action_candidate,
         std::memory_order_release);
+    // Publish only after the reversible visibility and held-device render
+    // checks succeeded. Native retries/requests are deliberately silent;
+    // insertion belongs to the acknowledged CommitCompleted transition.
+    if (input_owned) {
+        const auto feedback = reload_feedback_step(update.reload.event, profile.reload_kind);
+        const auto weapon_hand = context.left_rifle_gripped && !context.right_rifle_gripped
+            ? ReloadFeedbackHand::Left : ReloadFeedbackHand::Right;
+        queue_manual_reload_feedback(feedback,
+            feedback == ReloadFeedbackStep::Ejected ? weapon_hand : ReloadFeedbackHand::Left,
+            actions.sequence);
+        if (charging_update.event == MagazineChargingEvent::Grabbed) {
+            g_magazine_feedback_action_hand = charging_update.manipulating_left_hand
+                ? ReloadFeedbackHand::Left : ReloadFeedbackHand::Right;
+        }
+        const auto action_hand = automatic_en_bloc ? weapon_hand : g_magazine_feedback_action_hand;
+        if (charging_update.event == MagazineChargingEvent::FullyOpened) {
+            queue_manual_reload_feedback(ReloadFeedbackStep::ActionOpened, action_hand, actions.sequence);
+        } else if (charging_update.event == MagazineChargingEvent::Charged) {
+            queue_manual_reload_feedback(
+                profile.charging.interaction.completion == MagazineChargingCompletion::LatchOpen
+                    ? ReloadFeedbackStep::ChargeReady : ReloadFeedbackStep::ActionClosed,
+                action_hand, actions.sequence);
+        }
+    }
     g_shot_pending.store(false, std::memory_order_release);
 }
 
@@ -7360,6 +7825,11 @@ ManualReloadRuntimeInstallResult install_manual_reload_runtime(
         return result;
     }
     const auto module = bindings.module();
+    const auto predicted_player_state = bindings.data_address(
+        wawvr::t4::DataSymbolId::predicted_player_state, sizeof(std::uint32_t));
+    const auto local_player_entity = bindings.data_address(
+        wawvr::t4::DataSymbolId::local_player_entity,
+        kReloadLocalPlayerClientPointerOffset + sizeof(std::uint32_t));
     const auto request_context = module.address(
         kReloadRequestContextRva, kReloadRequestContext.size());
     const auto empty_context = module.address(
@@ -7403,7 +7873,8 @@ ManualReloadRuntimeInstallResult install_manual_reload_runtime(
         kSceneXModelIndexPointerRva, sizeof(std::uintptr_t));
     const auto scene_dobj_index_pointer = module.address(
         kSceneDObjIndexPointerRva, sizeof(std::uintptr_t));
-    if (!request_context.has_value() || !empty_context.has_value() ||
+    if (!predicted_player_state.has_value() || !local_player_entity.has_value() ||
+        !request_context.has_value() || !empty_context.has_value() ||
         !rechamber_visual_context.has_value() ||
         !pre_skin_context.has_value() ||
         !pre_skin_surface.has_value() ||
@@ -7516,6 +7987,8 @@ ManualReloadRuntimeInstallResult install_manual_reload_runtime(
     g_sl_find_string = *sl_find;
     g_db_find_xasset_header = *db_find_xasset_header;
     g_weapon_info_array = *weapon_info;
+    g_reload_predicted_player_state = *predicted_player_state;
+    g_reload_local_player_entity = *local_player_entity;
     g_viewmodel_world_origin = *viewmodel_world_origin;
     g_viewmodel_pose = *viewmodel_pose;
     g_scene_index_pointers = {
@@ -8205,7 +8678,6 @@ void update_manual_reload_viewmodel(
         const bool left_pose_valid = current_hand_pose(
             context, wawvr::xr::Hand::Left,
             &left_world, &left_head_local);
-        static_cast<void>(left_head_local);
         const auto& actions = context.controller.frame.actions;
         const auto& right = actions.hands[
             static_cast<std::uint32_t>(wawvr::xr::Hand::Right)];
@@ -8228,22 +8700,42 @@ void update_manual_reload_viewmodel(
         const bool left_squeeze_held =
             context.left_rifle_gripped ||
             left_squeeze >= kSqueezeEngage;
-        // Stripper-clip feed remains intentionally right-hand/right-waist.
-        const bool feed_squeeze_held = g_controller_state.feed_grip_was_held
-            ? right_squeeze >= kSqueezeRelease
-            : right_squeeze >= kSqueezeEngage;
-        wawvr::xr::EnginePose clip_world = right_world;
-        if (right_pose_valid) {
+        // Pre-reserve the free hand before the rifle's lower squeeze threshold
+        // can rejoin it. The actual belt grab latches this hand independently
+        // of whichever hand operated the bolt; an existing two-hand hold wins.
+        const auto feed_hand = select_stripper_clip_feed_hand(
+            g_controller_state, context.right_rifle_gripped,
+            context.left_rifle_gripped);
+        const bool feed_left = feed_hand == StripperClipFeedHand::Left;
+        const auto& feed_action = feed_left ? left : right;
+        const auto& feed_world = feed_left ? left_world : right_world;
+        const auto& feed_head_local = feed_left ? left_head_local : right_head_local;
+        const bool feed_pose_valid = feed_hand != StripperClipFeedHand::None &&
+            (feed_left ? left_pose_valid : right_pose_valid);
+        const float feed_squeeze = feed_left ? left_squeeze : right_squeeze;
+        const bool feed_was_held =
+            g_controller_state.sampled_feed_hand == feed_hand &&
+            g_controller_state.feed_grip_was_held;
+        const bool feed_squeeze_held = feed_hand != StripperClipFeedHand::None &&
+            feed_squeeze >= (feed_was_held ? kSqueezeRelease : kSqueezeEngage);
+        const ManualReloadPoint feed_local{
+            feed_head_local.x, feed_head_local.y, feed_head_local.z};
+        const bool feed_in_waist = feed_pose_valid && (feed_left
+            ? manual_reload_left_waist_contains(feed_local)
+            : manual_reload_right_waist_contains(feed_local));
+        wawvr::xr::EnginePose clip_world = feed_hand == StripperClipFeedHand::None
+            ? wawvr::xr::EnginePose{} : feed_world;
+        if (feed_pose_valid) {
             const auto clip_offset = compose(
-                right_world.axis, profile->feed_device_hand_offset);
+                feed_world.axis, profile->feed_device_hand_offset);
             clip_world.position = {
-                right_world.position.x + clip_offset.x,
-                right_world.position.y + clip_offset.y,
-                right_world.position.z + clip_offset.z,
+                feed_world.position.x + clip_offset.x,
+                feed_world.position.y + clip_offset.y,
+                feed_world.position.z + clip_offset.z,
             };
         }
         wawvr::xr::Vec3f receiver{};
-        const bool receiver_valid = right_pose_valid && receiver_position(
+        const bool receiver_valid = feed_pose_valid && receiver_position(
             context, *profile, clip_world.position, &receiver);
         const bool in_receiver =
             receiver_valid &&
@@ -8404,7 +8896,7 @@ void update_manual_reload_viewmodel(
             ? plan_manual_stripper_clip_commit(bolt_ammo.commit)
             : ManualStripperClipCommitPlan{};
         const bool native_commit_completed =
-            consume_native_commit_completion_locked();
+            consume_bolt_commit_completion_locked();
         ManualReloadControllerUpdate update =
             update_manual_reload_controller(
                 {
@@ -8419,16 +8911,17 @@ void update_manual_reload_viewmodel(
                     .begin_reload_pressed_edge =
                         bolt_update.event == Kar98BoltEvent::Grabbed &&
                         bolt_update.begin_reload_gesture,
+                    .feed_hand = feed_hand,
                     .feed_grip_held = feed_squeeze_held,
                     .feed_pose_valid =
-                        right_pose_valid && bolt_update.action_open,
+                        feed_pose_valid && bolt_update.action_open,
+                    .feed_grip_release_observed =
+                        input_owned && feed_pose_valid &&
+                        feed_action.squeeze.active &&
+                        std::isfinite(feed_action.squeeze.current) &&
+                        feed_action.squeeze.current < kSqueezeRelease,
                     .hand_in_feed_device_zone =
-                        right_pose_valid && bolt_update.action_open &&
-                        manual_reload_right_waist_contains({
-                            right_head_local.x,
-                            right_head_local.y,
-                            right_head_local.z,
-                        }),
+                        feed_in_waist && bolt_update.action_open,
                     .hand_in_insertion_zone =
                         bolt_update.action_open && in_receiver,
                 },
@@ -8440,9 +8933,13 @@ void update_manual_reload_viewmodel(
                 profile->diagnostic_name);
         }
         if (update.reload.request_native_commit) {
-            static_cast<void>(publish_native_commit_request_locked());
+            if (update.reload.event == gameplay::ReloadEvent::CommitRequested) {
+                ++g_bolt_physical_clip_serial;
+            }
+            static_cast<void>(publish_native_commit_request_locked(
+                true, g_bolt_physical_clip_serial));
             WAWVR_STEREO_DIAG_ONCE(
-                "ReloadDiag right-hand stripper clip reached the %s top-feed receiver; bounded full-clip ammo transfer requested while bolt remains open",
+                "ReloadDiag stripper clip reached the %s top-feed receiver; bounded full-clip ammo transfer requested while bolt remains open",
                 profile->diagnostic_name);
         }
         if (update.reload.request_native_cancel) {
@@ -8510,13 +9007,18 @@ void update_manual_reload_viewmodel(
             !bolt_update.bolt_grabbed &&
             (bolt_update.event == Kar98BoltEvent::FullyClosed ||
              bolt_update.event == Kar98BoltEvent::Released)) {
-            reset_manual_reload_controller(&g_controller_state);
+            // Closing/cancelling the bolt action is not evidence that a clip
+            // squeeze was released. Weapon/session resets still clear it.
+            reset_manual_reload_controller(&g_controller_state, true);
             update = {};
+            update.reserves_feed_grip =
+                g_controller_state.stripper_clip_grip_reserved_until_release;
             static_cast<void>(cancel_native_commit_request_locked());
         }
 
         const bool render_detached =
-            update.reload.render_detached_feed_device && right_pose_valid;
+            update.reload.render_detached_feed_device && feed_pose_valid;
+        bool feed_visual_ready = !render_detached;
         if (render_detached) {
             // Position always follows this exact OpenXR sample. Close to the
             // top-feed opening only orientation is assisted; no cached or
@@ -8525,11 +9027,12 @@ void update_manual_reload_viewmodel(
                 gameplay::ReloadOrientationSource::InsertionGuide) {
                 clip_world.axis = context.weapon_axis;
             }
-            if (render_clip(
-                    g_visual_state.asset, clip_world,
-                    context.camera_origin, viewmodel_pose)) {
+            feed_visual_ready = render_clip(
+                g_visual_state.asset, clip_world,
+                context.camera_origin, viewmodel_pose);
+            if (feed_visual_ready) {
                 WAWVR_STEREO_DIAG_ONCE(
-                    "ReloadDiag detached %s stripper clip rendered in the current right-glove pinch pose",
+                    "ReloadDiag detached %s stripper clip rendered in the selected glove pinch pose",
                     profile->diagnostic_name);
             }
         }
@@ -8542,11 +9045,12 @@ void update_manual_reload_viewmodel(
             bolt_update.block_attack,
             std::memory_order_release);
         g_reserve_right_grip.store(
-            update.reload.manual_reload_active ||
+            (update.reserves_feed_grip && feed_hand == StripperClipFeedHand::Right) ||
                 bolt_update.reserve_right_grip,
             std::memory_order_release);
         g_reserve_left_grip.store(
-            bolt_update.reserve_left_grip,
+            (update.reserves_feed_grip && feed_hand == StripperClipFeedHand::Left) ||
+                bolt_update.reserve_left_grip,
             std::memory_order_release);
         const bool left_action_candidate =
             context.right_rifle_gripped && !left_squeeze_held &&
@@ -8555,11 +9059,56 @@ void update_manual_reload_viewmodel(
         g_block_new_left_trigger_action.store(
             bolt_update.reserve_left_grip || left_action_candidate,
             std::memory_order_release);
+        if (input_owned) {
+            if (feed_hand != StripperClipFeedHand::None && feed_visual_ready) {
+                queue_manual_reload_feedback(
+                    reload_feedback_step(update.reload.event, profile->reload_kind),
+                    feed_hand == StripperClipFeedHand::Left
+                        ? ReloadFeedbackHand::Left : ReloadFeedbackHand::Right,
+                    actions.sequence);
+            }
+            const auto action_hand = bolt_update.manipulating_left_hand
+                ? ReloadFeedbackHand::Left : ReloadFeedbackHand::Right;
+            if (bolt_update.event == Kar98BoltEvent::FullyOpened) {
+                queue_manual_reload_feedback(ReloadFeedbackStep::ActionOpened, action_hand, actions.sequence);
+            } else if (bolt_update.event == Kar98BoltEvent::FullyClosed) {
+                queue_manual_reload_feedback(ReloadFeedbackStep::ActionClosed, action_hand, actions.sequence);
+            }
+        }
         if (shot_fired) {
             // The cycle lock is already published true by the update above.
             // A second local supported-rifle shot cannot race this clear because the
             // command hook blocks attack from the first notification onward.
             g_shot_pending.store(false, std::memory_order_release);
+        }
+        if (simulator_clip_diagnostics_enabled()) {
+            log_simulator_clip_diagnostic(
+                *profile, context, viewmodel_pose,
+                {
+                    .right_world = right_world,
+                    .left_world = left_world,
+                    .clip_world = clip_world,
+                    .right_head_local = right_head_local,
+                    .left_head_local = left_head_local,
+                    .receiver = receiver,
+                    .closed_bolt_anchor = closed_bolt_anchor,
+                    .current_bolt_handle = current_bolt_handle,
+                    .right_forward = right_hand_forward_coordinate,
+                    .left_forward = left_hand_forward_coordinate,
+                    .right_pose_valid = right_pose_valid,
+                    .left_pose_valid = left_pose_valid,
+                    .receiver_valid = receiver_valid,
+                    .bolt_anchor_valid = bolt_anchor_valid,
+                    .in_receiver = in_receiver,
+                    .right_near_bolt = right_hand_near_bolt,
+                    .left_near_bolt = left_hand_near_bolt,
+                    .input_owned = input_owned,
+                    .feed_squeeze_held = feed_squeeze_held,
+                    .feed_hand = feed_hand,
+                    .feed_in_waist = feed_in_waist,
+                },
+                update, bolt_update, bolt_ammo,
+                native_commit_completed, shot_fired);
         }
     } catch (...) {
         clear_runtime_state_if_epoch(update_session_epoch);
@@ -8574,8 +9123,10 @@ bool force_reload_button_from_identity(
     if (g_automatic_reload.load(std::memory_order_acquire) ||
         !g_enabled.load(std::memory_order_acquire) ||
         !g_supported.load(std::memory_order_acquire) ||
-        g_native_commit_phase.load(std::memory_order_acquire) !=
-            NativeCommitPhase::requested) {
+        (g_native_commit_phase.load(std::memory_order_acquire) != NativeCommitPhase::requested &&
+         !(g_active_weapon_binding.load(std::memory_order_acquire) != 0 &&
+           g_native_commit_phase.load(std::memory_order_acquire) == NativeCommitPhase::completed &&
+           bolt_commit_replay_window_open(GetTickCount64())))) {
         return false;
     }
     std::uint64_t validated_generation = 0;
@@ -8585,8 +9136,10 @@ bool force_reload_button_from_identity(
     }
     return g_enabled.load(std::memory_order_acquire) &&
         g_supported.load(std::memory_order_acquire) &&
-        g_native_commit_phase.load(std::memory_order_acquire) ==
-            NativeCommitPhase::requested &&
+        (g_native_commit_phase.load(std::memory_order_acquire) == NativeCommitPhase::requested ||
+         (g_active_weapon_binding.load(std::memory_order_acquire) != 0 &&
+          g_native_commit_phase.load(std::memory_order_acquire) == NativeCommitPhase::completed &&
+          bolt_commit_replay_window_open(GetTickCount64()))) &&
         validated_generation ==
             g_native_commit_publication_generation.load(
                 std::memory_order_acquire) &&

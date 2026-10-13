@@ -1,6 +1,6 @@
 # Known issues
 
-World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent SteamVR, weapon, scope, reload-setting and chest-placement changes received focused headset tests rather than another complete Campaign replay on the final beta.4 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent changes received focused tests rather than another complete Campaign replay on the final beta.5 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
 
 ## Modes
 
@@ -23,6 +23,11 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 
 ## Rendering and performance
 
+- **Foliage pop-in:** beta.5 extends unusually short grass and shrub draw
+  distances while retaining nearby detail and the game's ordinary visibility
+  checks. Shuri Castle simulator checks and a Hard Landing headset test showed
+  improvement; some appearance changes remain. This is not infinite foliage
+  draw distance, coverage of every map, or a guarantee of higher headset FPS.
 - **Native** is demanding: it renders two 2496 x 2688 eyes and a separate 1024 x 1024 physical-scope view inside a 6016 x 2688 packed surface.
 - If the image is black, unstable, or too slow, try **Performance**, then **Recovery**.
 - Dense encounters, overlays, recording software, wireless-streaming conditions, and runtime reprojection can introduce stutter independently of the mod.
@@ -30,7 +35,8 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 - The scoped-Mosin enemy-visibility, optical-zero, and scope-active HUD fixes
   passed local headset checks. A separate blank-scope report without an exact
   rifle/runtime identity still needs reporter confirmation. Hard Landing smoke
-  flicker and pause-menu clipping reports also remain open.
+  flicker remains open. Campaign pause-menu layout changes have simulator
+  coverage, but the affected user's resolution/headset still needs a retest.
 
 ## Motion controls and weapons
 
@@ -56,10 +62,16 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 - Released weapons use an upright headset-based chest estimate, not a separate
   body tracker. Garand chest placement received local headset acceptance;
   different proportions and uncommon weapons may need further positioning polish.
-- Specific bolt-rifle clip-insertion jumps, pistol support-hand placement, and missing manual
-  reload sound/feedback remain open reports. Report the exact weapon, map,
-  grip/action sequence, launcher settings, and build rather than assuming the
-  earlier general weapon-stability fix covers every interaction.
+- Mosin clip pickup and insertion stability received a local headset check.
+  This does not establish every bolt-action variant or grip sequence; the
+  original reporter should retest the exact sequence that jumped.
+- Mechanical reload sound and vibration event changes have automated/simulator
+  coverage. Actual controller strength and feel still need hardware feedback.
+- The added trigger-release melee safeguard has simulator coverage; remaining
+  real-world random-melee reports require affected-user confirmation.
+- Pistol support-hand placement remains a polish/reporting item and is not
+  claimed fixed by this update. Report the exact weapon, map, grip/action
+  sequence, settings and build for remaining interaction problems.
 
 ## Game and third-party files
 

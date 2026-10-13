@@ -2,13 +2,14 @@
 
 World War VR brings tracked, room-scale OpenXR play to the Windows retail version of **Call of Duty: World at War**. It provides stereo rendering, 6DOF headset tracking, motion-controller weapons, two-hand handling, manual reload interactions, physical scopes, grenades, and VR-native comfort controls through a standalone launcher.
 
-The current free release is **v0.4.0-beta.4**, adding chest-anchored released
-weapons and launcher/reload-setting reliability improvements. It also includes
-the earlier aiming, mounted-gun, scoped-Mosin, scope-HUD, Garand/M7 and melee
-changes described in [CHANGELOG.md](CHANGELOG.md). This is not a new performance
-or universal headset-compatibility fix.
+The current free release is **v0.4.0-beta.5**, improving short-range grass and
+shrub visibility, Mosin clip interactions, reload feedback, Campaign pause-menu
+layout and accidental-melee safeguards. The outdoor headset check showed a
+substantial foliage improvement, but some pop-in remains. Earlier chest,
+aiming, mounted-gun and scope work is retained; see [CHANGELOG.md](CHANGELOG.md).
+This is not a universal frame-rate or headset-compatibility fix.
 
-> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.4 package. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
+> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.5 package. The latest foliage check covered Hard Landing through VirtualDesktopXR; other maps and hardware still need feedback. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
 
 World War VR is a fan-made open-source project. It does not include Call of Duty: World at War executables, maps, textures, audio, or other Activision game content. You need your own legitimate, compatible World at War 1.7 installation.
 
@@ -147,7 +148,7 @@ Read the full [controls guide](docs/CONTROLS.md) before testing manual weapons, 
 Clone the tagged repository, including its pinned OpenXR submodule:
 
 ```powershell
-git clone --recurse-submodules --branch v0.4.0-beta.4 https://github.com/jplakon/WorldWarVR.git
+git clone --recurse-submodules --branch v0.4.0-beta.5 https://github.com/jplakon/WorldWarVR.git
 cd WorldWarVR
 ```
 
@@ -161,17 +162,24 @@ different CMake on PATH is not used. The complete pinned OpenXR source is
 already included, so this native rebuild does not require Git metadata:
 
 ```powershell
-.\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta4
+.\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta5
 ```
 
 Use a fresh build folder. The script builds the Win32 native components and
 runs their tests. The mod DLL is written to
-`rebuild-beta4\vs-release\src\mod\Release\WorldWarVR.dll`.
+`rebuild-beta5\vs-release\src\mod\Release\WorldWarVR.dll`.
 To rebuild the separate graphical launcher, install the .NET 8 SDK and follow
 the locked restore and publish commands in
 [launcher publishing instructions](launcher-ui/WorldAtWarVR.Launcher/PUBLISHING.md).
 The release packaging scripts require a Git checkout for provenance checks;
 they cannot run directly from the metadata-free Source ZIP.
+
+The root native source matches the retained, tested beta.5 gameplay DLL.
+The graphical launcher retains beta.4 logic with beta.5 version metadata;
+the production native launcher helper is unchanged. Complete beta.4 source
+for that retained component is also supplied under `component-source/beta4`,
+including its pinned dependency source. See `SOURCE-SNAPSHOT.txt` and the
+supplied GPL source notice for component mapping.
 
 ## Reporting bugs
 

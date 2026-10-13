@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="WorldAtWarVR_Launcher.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="World War VR"
+    mc:Ignorable="d">
+    <Grid
+        x:Name="WindowRoot"
+        Background="{ThemeResource LauncherBaseBrush}"
+        SizeChanged="WindowRoot_SizeChanged">
+        <!-- Decorative artwork follows the physical client bounds exactly.
+             It is intentionally outside the fixed-ratio interactive shell so
+             resizing can change the texture's aspect ratio independently. -->
+        <Image
+            x:Name="BackgroundTexture"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch"
+            AutomationProperties.AccessibilityView="Raw"
+            IsHitTestVisible="False"
+            Opacity="0.68"
+            Source="Assets/Launcher/LauncherBackground.png"
+            Stretch="Fill" />
+        <Border
+            x:Name="BackgroundTint"
+            Background="#4A050504"
+            IsHitTestVisible="False" />
+
+        <!-- The complete visual shell uses one immutable logical coordinate
+             system. Resizing scales the real controls uniformly instead of
+             rearranging them at arbitrary breakpoints. -->
+        <Viewbox
+            x:Name="ShellScaler"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            Stretch="Uniform"
+            StretchDirection="DownOnly">
+            <Grid
+                x:Name="DesignSurface"
+                Width="1440"
+                Height="970"
+                Background="Transparent">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="116" />
+                    <RowDefinition Height="854" />
+                </Grid.RowDefinitions>
+
+                <Grid
+                    x:Name="VisualTitleBar"
+                    Padding="46,13,190,10"
+                    Background="#0C0D0D">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="1" />
+                    </Grid.RowDefinitions>
+
+                    <StackPanel
+                        VerticalAlignment="Center"
+                        Spacing="0">
+                        <TextBlock
+                            FontFamily="Bahnschrift SemiCondensed"
+                            FontSize="35"
+                            FontWeight="Bold"
+                            IsTextSelectionEnabled="False">
+                            <Run Foreground="#DED5C3" Text="WORLD WAR " />
+                            <Run Foreground="#6F7E84" Text="VR" />
+                        </TextBlock>
+                        <TextBlock
+                            Margin="2,-2,0,0"
+                            Foreground="#CFC6B5"
+                            FontFamily="Bahnschrift SemiCondensed"
+                            FontSize="19"
+                            FontWeight="SemiLight"
+                            IsTextSelectionEnabled="False"
+                            Text="Standalone VR Launcher" />
+                    </StackPanel>
+
+                    <Border
+                        Grid.Row="1"
+                        Background="#40372C" />
+                </Grid>
+
+                <Frame
+                    x:Name="RootFrame"
+                    Grid.Row="1"
+                    Background="Transparent" />
+            </Grid>
+        </Viewbox>
+
+        <!-- Native caption buttons remain full-size for accessibility. This
+             transparent, unscaled overlay supplies the drag region while the
+             visible title bar scales with the rest of the composition. -->
+        <Grid
+            x:Name="TitleBarDragRegion"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            Background="Transparent" />
+    </Grid>
+</Window>

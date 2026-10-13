@@ -3,9 +3,16 @@
 
 #include "gameplay/manual_reload_logic.hpp"
 
+#include <array>
 #include <cstdint>
 
 namespace wawvr::mod {
+
+enum class StripperClipFeedHand : std::int8_t {
+    None = -1,
+    Right = 0,
+    Left = 1,
+};
 
 struct ManualReloadControllerFrame final {
     bool input_owned{};
@@ -18,8 +25,13 @@ struct ManualReloadControllerFrame final {
     bool native_action_open{};
     bool native_commit_completed{};
     bool begin_reload_pressed_edge{};
+    StripperClipFeedHand feed_hand{StripperClipFeedHand::Right};
     bool feed_grip_held{};
     bool feed_pose_valid{};
+    // A focused/current tracked hand with an active, finite squeeze below the
+    // physical release threshold. Independent of feed_pose_valid: closing the
+    // bolt disables insertion geometry but must not prevent a real release.
+    bool feed_grip_release_observed{};
     bool hand_in_feed_device_zone{};
     bool hand_in_insertion_zone{};
 };
@@ -28,6 +40,12 @@ struct ManualReloadControllerState final {
     bool input_owned{};
     std::uint64_t last_action_sequence{};
     bool feed_grip_was_held{};
+    StripperClipFeedHand sampled_feed_hand{StripperClipFeedHand::None};
+    // Chosen by the physical belt grab, independently of the bolt hand.
+    StripperClipFeedHand stripper_clip_hand{StripperClipFeedHand::None};
+    // Contact insertion can finish while squeeze is still held. That squeeze
+    // continues to belong to the stripper clip until a proven hand release.
+    bool stripper_clip_grip_reserved_until_release{};
     gameplay::ReloadState reload{};
 };
 
@@ -36,7 +54,16 @@ struct ManualReloadControllerUpdate final {
     bool begin_reload_pressed_edge{};
     bool feed_grip_pressed_edge{};
     bool feed_grip_released_edge{};
+    bool reserves_feed_grip{};
 };
+
+// Before pickup, reserve only the free hand opposite a sole rifle owner. A
+// latched clip keeps its original hand through completion and proven release.
+// Never detach an existing two-hand hold merely to offer a clip.
+[[nodiscard]] StripperClipFeedHand select_stripper_clip_feed_hand(
+    const ManualReloadControllerState& state,
+    bool right_rifle_gripped,
+    bool left_rifle_gripped) noexcept;
 
 // Every currently accepted physical stripper-clip rifle has a five-round
 // internal magazine. Keep this gameplay capacity independent from authored
@@ -68,6 +95,73 @@ struct ManualStripperClipCommitPlan final {
 [[nodiscard]] ManualStripperClipCommitPlan
 plan_manual_stripper_clip_commit(
     const ManualStripperClipCommitInput& input) noexcept;
+
+inline constexpr std::uint64_t kManualStripperClipFanoutMilliseconds = 250;
+
+struct ManualStripperClipRequestGate final {
+    bool issued{};
+    std::uint64_t physical_request_serial{};
+};
+
+// Committing asks for native work every render update. A failed/expired native
+// pass must not turn that repeated request into a second physical clip budget.
+[[nodiscard]] bool begin_manual_stripper_clip_request(
+    std::uint64_t physical_request_serial,
+    ManualStripperClipRequestGate* gate) noexcept;
+
+struct ManualStripperClipCommitKey final {
+    std::uint64_t session_epoch{};
+    std::uint64_t publication_generation{};
+    std::uint64_t request_serial{};
+    std::uint64_t shot_generation{};
+    std::int32_t weapon_index{};
+    std::uint32_t definition_address{};
+    std::int32_t ammo_index{-1};
+    std::int32_t clip_index{-1};
+    bool operator==(const ManualStripperClipCommitKey&) const = default;
+};
+
+struct ManualStripperClipFanoutFrame final {
+    ManualStripperClipCommitKey key{};
+    std::uint64_t now_milliseconds{};
+    std::uintptr_t player_state{};
+    ManualStripperClipCommitInput ammo{};
+};
+
+// One physical clip owns one immutable pre/post ammo pair. Prediction may
+// restore the pre-state in the SAME buffer, so pointer-only deduplication is
+// insufficient. Two distinct buffers are a conservative fail-closed bound,
+// not an assertion that every retail simulation path has exactly two states.
+struct ManualStripperClipFanoutState final {
+    bool initialized{};
+    bool verified{};
+    bool failed{};
+    ManualStripperClipCommitKey key{};
+    std::uint64_t started_at_milliseconds{};
+    ManualStripperClipCommitInput before{};
+    std::int32_t expected_loaded{};
+    std::int32_t expected_reserve{};
+    std::array<std::uintptr_t, 2> player_states{};
+};
+
+struct ManualStripperClipFanoutPlan final {
+    bool valid{};
+    bool already_applied{};
+    std::int32_t native_reload_clip_calls{};
+    std::int32_t expected_loaded{};
+    std::int32_t expected_reserve{};
+};
+
+[[nodiscard]] ManualStripperClipFanoutPlan plan_manual_stripper_clip_fanout(
+    const ManualStripperClipFanoutFrame& frame,
+    ManualStripperClipFanoutState* state) noexcept;
+
+// A partial/native-mismatched result poisons this receipt; never calculate a
+// second top-up from the partial result. The runtime also checks its exact
+// thread-local player-state witness before acknowledging native completion.
+[[nodiscard]] bool verify_manual_stripper_clip_fanout(
+    const ManualStripperClipFanoutFrame& frame,
+    ManualStripperClipFanoutState* state) noexcept;
 
 struct ManualReloadPoint final {
     float x{};
@@ -124,6 +218,7 @@ struct ManualReloadReceiverGeometry final {
     ManualReloadControllerState* state) noexcept;
 
 void reset_manual_reload_controller(
-    ManualReloadControllerState* state) noexcept;
+    ManualReloadControllerState* state,
+    bool preserve_feed_grip_reservation = false) noexcept;
 
 }  // namespace wawvr::mod

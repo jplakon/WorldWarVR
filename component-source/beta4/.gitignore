@@ -1,0 +1,52 @@
+/build/
+/build-*/
+/out/
+/artifacts/
+/dist/
+/runtime/
+/logs/
+/.review-*/
+
+# Generated Python bytecode and interpreter caches.
+__pycache__/
+*.py[cod]
+
+# Local research checkout used for source comparison; release provenance pins
+# the exact revision without tracking or packaging the reference repository.
+
+# User-owned/proprietary game files must never enter the repository.
+CoDWaW.exe
+CoDWaWmp.exe
+t4sp.exe
+t4mp.exe
+*.ff
+*.iwd
+*.bik
+*.vrmod
+PeZBOTWAW_005p.zip
+/main/
+/zone/
+/mp_PeZBOTWAW/
+
+# Generated Windows build products.
+*.asi
+*.dll
+*.exe
+*.exp
+*.ilk
+*.lib
+*.obj
+*.pdb
+*.tlog
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+.vs/
+
+# Local CMake configuration.
+CMakeUserPresets.json
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake

@@ -249,10 +249,10 @@ observe_capture_submission_phase(
     std::uint64_t weapon_receipt_action_sequence,
     std::uint64_t source_action_sequence) noexcept;
 
-// WaW MP enters the team/class UI through the gameplay R_RenderScene call.
-// Packing that call while a catcher is active leaves a complete SBS frame
-// underneath a mono panel. Render stock mono until MP is both CA_ACTIVE and
-// catcher-free; SP retains its already headset-tested scene path.
+// Native menus use the stock full-frame projection, not packed eye viewports.
+// MP renders stock mono until CA_ACTIVE and catcher-free. SP renders stock
+// mono only for a valid active native-UI catcher (pause/options); gameplay,
+// console-only, frontend/loading and invalid states keep the established path.
 [[nodiscard]] bool should_pack_stereo_scene(
     bool multiplayer_profile,
     bool state_valid,

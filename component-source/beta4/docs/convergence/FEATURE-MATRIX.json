@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "project_role": "World at War adaptation of KisakCOD VR",
+  "sources": {
+    "cod4_product_reference": {
+      "repository": "jplakon/CallOfDuty4_VR",
+      "commit": "271e4ac8f8a55433a46aeaf4423c4127198ab02d"
+    },
+    "waw_retail_handoff": {
+      "repository": "RyanCraighead/WorldWarVR-Project",
+      "commit": "3beac3f7bb1485be14743b92495656a1e5c0acad"
+    },
+    "archived_integration_evidence": {
+      "kind": "archived_interoperability_evidence",
+      "branch": "waw-retail-vr-gate3-stereo-probe",
+      "base_commit": "b169595c1a447c25422bece220bb55ef0cb4e9db",
+      "build_dependency": false
+    }
+  },
+  "features": [
+    {
+      "id": "launcher-validation",
+      "destination": "launcher",
+      "primary_source": "waw_retail_handoff",
+      "cod4_reference": "installer and configurator workflow",
+      "disposition": "retain_then_rebrand",
+      "phase": 1,
+      "acceptance": "exact SP and MP identity validation remains fail closed"
+    },
+    {
+      "id": "t4-profiles-abis",
+      "destination": "src/platform/waw",
+      "primary_source": "waw_retail_handoff",
+      "archived_integration_evidence": "fingerprint and rollback guards",
+      "disposition": "retain_with_history",
+      "phase": 1,
+      "acceptance": "positive and single-byte-negative tests cover every installed hook"
+    },
+    {
+      "id": "openxr-lifecycle",
+      "destination": "src/vr",
+      "primary_source": "waw_retail_handoff",
+      "cod4_reference": "frame timing, backend policy and diagnostics",
+      "archived_integration_evidence": "exact sequence ownership and zero-layer recovery",
+      "disposition": "converge",
+      "phase": 2,
+      "acceptance": "coherent stereo and 6DoF survive sustained headset play"
+    },
+    {
+      "id": "openvr-fallback",
+      "destination": "src/vr",
+      "primary_source": "cod4_product_reference",
+      "disposition": "port_later",
+      "phase": 3,
+      "acceptance": "OpenXR remains unchanged and OpenVR passes a separate headset matrix"
+    },
+    {
+      "id": "stereo-scene",
+      "destination": "src/platform/waw and src/integration/waw",
+      "primary_source": "waw_retail_handoff",
+      "cod4_reference": "one simulation and two eye renders",
+      "archived_integration_evidence": "same-frame ownership proof",
+      "disposition": "retain_and_harden",
+      "phase": 2,
+      "acceptance": "both eyes derive from one game frame without mono fallback"
+    },
+    {
+      "id": "projection-output-quality",
+      "destination": "src/vr",
+      "primary_source": "cod4_product_reference",
+      "archived_integration_evidence": "asymmetric full-extent FSR1 path and pixel proof",
+      "disposition": "benchmark_then_select",
+      "phase": 3,
+      "acceptance": "headset comparison shows no stretch, crop, bars or quality regression"
+    },
+    {
+      "id": "semantic-input-actions",
+      "destination": "src/vr and src/gameplay",
+      "primary_source": "cod4_product_reference",
+      "waw_bridge": "waw_retail_handoff usercmd and native command hooks",
+      "disposition": "port_behavior_retain_bridge",
+      "phase": 3,
+      "acceptance": "bindings are configurable and every game mutation remains on the game thread"
+    },
+    {
+      "id": "locomotion-snap-turn",
+      "destination": "src/gameplay",
+      "primary_source": "cod4_product_reference",
+      "archived_integration_evidence": "headset-accepted movement and one-shot 45 degree turn",
+      "disposition": "extract_and_port",
+      "phase": 2,
+      "acceptance": "one turn per deflection, neutral rearm and no held repeat"
+    },
+    {
+      "id": "right-weapon-placement",
+      "destination": "src/gameplay and src/integration/waw",
+      "primary_source": "cod4_product_reference",
+      "waw_bridge": "waw_retail_handoff weapon hook",
+      "archived_integration_evidence": "accepted retail controller pose",
+      "disposition": "port_behavior_retain_bridge",
+      "phase": 2,
+      "acceptance": "rifle remains rigid to the right controller in both eyes"
+    },
+    {
+      "id": "muzzle-ballistics",
+      "destination": "src/integration/waw",
+      "primary_source": "waw_retail_handoff",
+      "cod4_reference": "final rendered tag_flash semantics",
+      "archived_integration_evidence": "accepted barrel-directed bullets",
+      "disposition": "retain_and_align",
+      "phase": 2,
+      "acceptance": "authoritative and client-visible shots begin at the barrel and share direction"
+    },
+    {
+      "id": "free-left-hand",
+      "destination": "src/gameplay and src/integration/waw",
+      "primary_source": "cod4_product_reference",
+      "archived_integration_evidence": "standalone WaW glove render path",
+      "disposition": "port_and_rewrite_bridge",
+      "phase": 4,
+      "acceptance": "glove position and rotation match the controller and release cleanly"
+    },
+    {
+      "id": "two-hand-support",
+      "destination": "src/gameplay",
+      "primary_source": "cod4_product_reference",
+      "archived_integration_evidence": "WaW two-hand weapon solver and physical tuning",
+      "disposition": "extract_and_port",
+      "phase": 4,
+      "acceptance": "support hand grips and releases without disturbing right-hand aim"
+    },
+    {
+      "id": "detachable-magazine-reload",
+      "destination": "src/gameplay/reload",
+      "primary_source": "cod4_product_reference",
+      "disposition": "extract_portable_state_machine",
+      "phase": 5,
+      "acceptance": "magazine draw, current-hand tracking, insertion and native ammo commit agree"
+    },
+    {
+      "id": "internal-stripper-clip-reload",
+      "destination": "src/gameplay/reload and src/integration/waw",
+      "primary_source": "archived_integration_evidence",
+      "cod4_reference": "manual reload state/render/commit separation",
+      "waw_bridge": "Ryan-derived DObj, tag and native animation access",
+      "disposition": "rewrite_as_reload_profile",
+      "phase": 5,
+      "acceptance": "Kar98 bolt opens, clip follows glove, inserts once, ammo commits and bolt closes"
+    },
+    {
+      "id": "manual-grenades",
+      "destination": "src/gameplay and src/integration/waw",
+      "primary_source": "cod4_product_reference",
+      "archived_integration_evidence": "WaW physical throw velocity and native bridge",
+      "disposition": "converge",
+      "phase": 5,
+      "acceptance": "belt ownership, held model, release velocity, ground pickup and throwback match physical motion"
+    },
+    {
+      "id": "hud-menu-prompts",
+      "destination": "src/settings, src/integration/waw and tools/configurator",
+      "primary_source": "cod4_product_reference",
+      "waw_bridge": "waw_retail_handoff finite panel and HUD hooks",
+      "disposition": "port_ux_retain_bridge",
+      "phase": 3,
+      "acceptance": "menus are fused and usable; HUD is comfortable and configurable"
+    },
+    {
+      "id": "configurator-installer",
+      "destination": "tools/configurator and installer",
+      "primary_source": "cod4_product_reference",
+      "waw_bridge": "waw_retail_handoff game validation and staging",
+      "disposition": "port_workflow",
+      "phase": 6,
+      "acceptance": "install, update, repair and uninstall preserve user and game data"
+    },
+    {
+      "id": "diagnostics-receipts",
+      "destination": "src/settings, src/diagnostics and tests",
+      "primary_source": "cod4_product_reference",
+      "archived_integration_evidence": "exact frame, image and controller ownership receipts",
+      "disposition": "selective_port",
+      "phase": 1,
+      "acceptance": "proof is truthful and bounded without becoming the product architecture"
+    }
+  ]
+}

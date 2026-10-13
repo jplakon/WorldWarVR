@@ -222,13 +222,44 @@ void test_eye_local_bloom_requires_explicit_stereo_opt_in() {
            "bloom never changes frontend, cinematic, or menu panels");
 }
 
+void test_sp_native_ui_scene_packing_policy() {
+    using wawvr::mod::kT4ConsoleKeyCatcher;
+    using wawvr::mod::kT4UiKeyCatcher;
+    using wawvr::mod::should_pack_stereo_scene;
+
+    expect(!should_pack_stereo_scene(false, true, 10, 10, kT4UiKeyCatcher),
+           "active SP native pause/options render one full-frame stock scene");
+    expect(!should_pack_stereo_scene(
+               false, true, 10, 10, kT4UiKeyCatcher | kT4ConsoleKeyCatcher) &&
+               !should_pack_stereo_scene(false, true, 10, 10, kT4UiKeyCatcher | 0x08),
+           "native UI retains its full-frame projection with mixed catchers");
+    expect(should_pack_stereo_scene(false, true, 10, 10, 0),
+           "closing the native UI immediately restores SP stereo gameplay");
+    expect(should_pack_stereo_scene(false, true, 10, 10, kT4ConsoleKeyCatcher) &&
+               should_pack_stereo_scene(false, true, 10, 10, 0x08),
+           "SP console-only and unknown catchers do not gain the native-UI exception");
+    for (std::int32_t connection = 0; connection <= 11; ++connection) {
+        expect(should_pack_stereo_scene(
+                   false, false, connection, 10, kT4UiKeyCatcher),
+               "unreadable SP presentation state preserves the established scene path");
+        if (connection != 10) {
+            expect(should_pack_stereo_scene(
+                       false, true, connection, 10, kT4UiKeyCatcher),
+                   "SP frontend/loading/non-active UI preserves its established scene path");
+        }
+    }
+    expect(!should_pack_stereo_scene(false, true, 12, 12, kT4UiKeyCatcher) &&
+               should_pack_stereo_scene(false, true, 10, 12, kT4UiKeyCatcher),
+           "SP policy uses the bound active state rather than a hardcoded value");
+}
+
 void test_presentation_mode_classifier_and_layouts() {
     using wawvr::mod::ActiveUiMonoSource;
     using wawvr::mod::PresentationMode;
 
     expect(wawvr::mod::should_pack_stereo_scene(
                false, false, 0, 10, 0x10),
-           "SP keeps its established scene path regardless of presentation state");
+           "invalid SP frontend state keeps its established scene path");
     expect(wawvr::mod::should_pack_stereo_scene(
                true, true, 10, 10, 0),
            "active catcher-free MP gameplay packs two VR eyes");
@@ -746,6 +777,7 @@ int main() {
     test_ownership_classification();
     test_duplicate_mono_layout();
     test_eye_local_bloom_requires_explicit_stereo_opt_in();
+    test_sp_native_ui_scene_packing_policy();
     test_presentation_mode_classifier_and_layouts();
     test_monoscopic_comfort_views();
     test_projection_recovery_plan();
