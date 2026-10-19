@@ -72,6 +72,33 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         reload_feedback.hpp
         reload_feedback_logic.cpp
         reload_feedback_logic.hpp
+        native_prompt_binding_hook.cpp
+        server_impact_audit.cpp
+        server_impact_audit.hpp
+        server_impact_audit_bridge.inl
+        server_impact_identity_logic.hpp
+        sight_audit.cpp
+        sight_audit.hpp
+        sight_audit_logic.cpp
+        sight_audit_logic.hpp
+        sight_audit_recipes.hpp
+        sight_pixel_projection_logic.cpp
+        sight_pixel_projection_logic.hpp
+        sight_pixel_geometry_recipes.hpp
+        calibrated_rifle_basis.cpp
+        calibrated_rifle_basis.hpp
+        calibrated_rifle_recipe.hpp
+        calibrated_pistol_basis.cpp
+        calibrated_pistol_basis.hpp
+        calibrated_pistol_recipe.hpp
+        sight_bind_transform.hpp
+        server_impact_install_diagnostic.hpp
+        native_prompt_binding_hook.hpp
+        native_prompt_binding_bridge.inl
+        native_prompt_loading_bridge.inl
+        native_prompt_loading_item_observation.hpp
+        native_prompt_loading_tip_policy.hpp
+        native_prompt_mission_start_policy.hpp
         mounted_gun_runtime.cpp
         mounted_gun_runtime.hpp
         frame_boundary_hook.cpp
@@ -132,6 +159,9 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         manual_reload_controller_logic.hpp
         manual_reload_runtime.cpp
         manual_reload_runtime.hpp
+        rigid_visibility_split.cpp
+        rigid_visibility_split.hpp
+        shared_feed_geometry_runtime.inl
         manual_grenade_logic.cpp
         manual_grenade_logic.hpp
         manual_grenade_runtime.cpp
@@ -180,6 +210,10 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         rocket_barrage_logic.hpp
         weapon_hook.cpp
         weapon_hook.hpp
+        vr_gameplay_prompts.cpp
+        vr_gameplay_prompts.hpp
+        vr_gameplay_prompt_overlay.cpp
+        vr_gameplay_prompt_overlay.hpp
     )
 endif()
 
@@ -213,6 +247,89 @@ set_target_properties(
 )
 
 if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        add_executable(WorldAtWarVRNativePromptBindingBridgeTest native_prompt_binding_bridge_test.cpp native_prompt_binding_bridge.inl)
+        target_link_libraries(WorldAtWarVRNativePromptBindingBridgeTest PRIVATE wawvr_project_options)
+        add_test(NAME mod.native_prompt_binding_bridge COMMAND WorldAtWarVRNativePromptBindingBridgeTest)
+        add_executable(WorldAtWarVRNativePromptLoadingBridgeTest native_prompt_loading_bridge_test.cpp native_prompt_loading_bridge.inl)
+        target_link_libraries(WorldAtWarVRNativePromptLoadingBridgeTest PRIVATE wawvr_project_options)
+        add_test(NAME mod.native_prompt_loading_bridge COMMAND WorldAtWarVRNativePromptLoadingBridgeTest)
+        add_executable(WorldAtWarVRServerImpactAuditBridgeTest server_impact_audit_bridge_test.cpp server_impact_audit_bridge.inl)
+        target_link_libraries(WorldAtWarVRServerImpactAuditBridgeTest PRIVATE wawvr_project_options)
+        add_test(NAME mod.server_impact_audit_bridge COMMAND WorldAtWarVRServerImpactAuditBridgeTest)
+        add_executable(WorldAtWarVRContextualThrowbackBridgeTest contextual_throwback_bridge_test.cpp contextual_throwback_bridge.inl)
+        target_link_libraries(WorldAtWarVRContextualThrowbackBridgeTest PRIVATE wawvr_project_options)
+        add_test(NAME mod.contextual_throwback_bridge COMMAND WorldAtWarVRContextualThrowbackBridgeTest)
+    endif()
+    add_executable(WorldAtWarVRGrenadeNativeObservationTest grenade_native_observation_test.cpp grenade_native_observation.hpp)
+    target_link_libraries(WorldAtWarVRGrenadeNativeObservationTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.grenade_native_observation COMMAND WorldAtWarVRGrenadeNativeObservationTest)
+    add_executable(WorldAtWarVRGrenadeObserverMemoryTest grenade_observer_memory_test.cpp grenade_observer_memory.hpp)
+    target_link_libraries(WorldAtWarVRGrenadeObserverMemoryTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.grenade_observer_memory COMMAND WorldAtWarVRGrenadeObserverMemoryTest)
+    add_executable(WorldAtWarVRGrenadeObserverPatchLogicTest grenade_observer_patch_logic_test.cpp grenade_observer_patch_logic.hpp)
+    target_link_libraries(WorldAtWarVRGrenadeObserverPatchLogicTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.grenade_observer_patch_logic COMMAND WorldAtWarVRGrenadeObserverPatchLogicTest)
+    add_executable(WorldAtWarVRGrenadeQueueReceiptsTest grenade_queue_receipts_test.cpp grenade_queue_receipts.hpp)
+    target_link_libraries(WorldAtWarVRGrenadeQueueReceiptsTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.grenade_queue_receipts COMMAND WorldAtWarVRGrenadeQueueReceiptsTest)
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        add_executable(WorldAtWarVRGrenadeQueueObserverBridgeTest grenade_queue_observer_bridge_test.cpp grenade_queue_observer_bridge.inl)
+        target_link_libraries(WorldAtWarVRGrenadeQueueObserverBridgeTest PRIVATE wawvr_project_options)
+        add_test(NAME mod.grenade_queue_observer_bridge COMMAND WorldAtWarVRGrenadeQueueObserverBridgeTest)
+    endif()
+    add_executable(WorldAtWarVRRigidVisibilitySplitTest rigid_visibility_split.cpp rigid_visibility_split_test.cpp)
+    target_link_libraries(WorldAtWarVRRigidVisibilitySplitTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRRigidVisibilitySplitTest PRIVATE "${PROJECT_SOURCE_DIR}/src")
+    add_test(NAME mod.rigid_visibility_split COMMAND WorldAtWarVRRigidVisibilitySplitTest)
+    add_executable(WorldAtWarVRGameplayPromptOverlayTest vr_gameplay_prompt_overlay.cpp vr_gameplay_prompts.cpp vr_gameplay_prompt_overlay_test.cpp)
+    target_link_libraries(WorldAtWarVRGameplayPromptOverlayTest PRIVATE wawvr_project_options d3d9 user32)
+    target_include_directories(WorldAtWarVRGameplayPromptOverlayTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr" "${PROJECT_SOURCE_DIR}/src")
+    add_test(NAME mod.vr_gameplay_prompt_overlay COMMAND WorldAtWarVRGameplayPromptOverlayTest)
+    add_executable(WorldAtWarVRGameplayPromptsTest vr_gameplay_prompts.cpp vr_gameplay_prompts_test.cpp)
+    target_link_libraries(WorldAtWarVRGameplayPromptsTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.vr_gameplay_prompts COMMAND WorldAtWarVRGameplayPromptsTest)
+    add_executable(WorldAtWarVRLoadingTipTextTest vr_loading_tip_text.hpp vr_loading_tip_text_test.cpp)
+    target_link_libraries(WorldAtWarVRLoadingTipTextTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.vr_loading_tip_text COMMAND WorldAtWarVRLoadingTipTextTest)
+    add_executable(WorldAtWarVRLoadingItemObservationTest native_prompt_loading_item_observation_test.cpp native_prompt_loading_item_observation.hpp native_prompt_loading_tip_policy.hpp)
+    target_link_libraries(WorldAtWarVRLoadingItemObservationTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.loading_item_observation COMMAND WorldAtWarVRLoadingItemObservationTest)
+    add_executable(WorldAtWarVRMissionStartPromptTest native_prompt_mission_start_test.cpp native_prompt_mission_start_policy.hpp)
+    target_link_libraries(WorldAtWarVRMissionStartPromptTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.mission_start_prompt COMMAND WorldAtWarVRMissionStartPromptTest)
+    add_executable(WorldAtWarVRReloadFamilyStressTest manual_reload_family_stress_test.cpp manual_reload_controller_logic.cpp detachable_magazine_weapon_profile.cpp bolt_action_weapon_profile.cpp)
+    target_link_libraries(WorldAtWarVRReloadFamilyStressTest PRIVATE wawvr_project_options wawvr_gameplay)
+    target_include_directories(WorldAtWarVRReloadFamilyStressTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.manual_reload_family_stress COMMAND WorldAtWarVRReloadFamilyStressTest)
+    add_executable(WorldAtWarVRShotLineAuditTest shot_line_audit_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRShotLineAuditTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRShotLineAuditTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.shot_line_audit COMMAND WorldAtWarVRShotLineAuditTest)
+    add_executable(WorldAtWarVRServerImpactIdentityTest server_impact_identity_test.cpp)
+    target_link_libraries(WorldAtWarVRServerImpactIdentityTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.server_impact_identity COMMAND WorldAtWarVRServerImpactIdentityTest)
+    add_executable(WorldAtWarVRSightAuditTest sight_audit_logic.cpp sight_audit_test.cpp)
+    target_link_libraries(WorldAtWarVRSightAuditTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRSightAuditTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.sight_audit COMMAND WorldAtWarVRSightAuditTest)
+
+    add_executable(WorldAtWarVRSightPixelProjectionTest sight_pixel_projection_logic.cpp sight_pixel_projection_test.cpp)
+    target_link_libraries(WorldAtWarVRSightPixelProjectionTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRSightPixelProjectionTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.sight_pixel_projection COMMAND WorldAtWarVRSightPixelProjectionTest)
+
+    add_executable(WorldAtWarVRCalibratedRifleBasisTest calibrated_rifle_basis.cpp calibrated_rifle_basis_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRCalibratedRifleBasisTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRCalibratedRifleBasisTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.calibrated_rifle_basis COMMAND WorldAtWarVRCalibratedRifleBasisTest)
+    add_executable(WorldAtWarVRCalibratedPistolBasisTest calibrated_pistol_basis.cpp calibrated_pistol_basis_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRCalibratedPistolBasisTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRCalibratedPistolBasisTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.calibrated_pistol_basis COMMAND WorldAtWarVRCalibratedPistolBasisTest)
+    add_executable(WorldAtWarVRServerImpactInstallDiagnosticTest server_impact_install_diagnostic_test.cpp)
+    target_link_libraries(WorldAtWarVRServerImpactInstallDiagnosticTest PRIVATE wawvr_project_options)
+    add_test(NAME mod.server_impact_install_diagnostic COMMAND WorldAtWarVRServerImpactInstallDiagnosticTest)
     add_executable(WorldAtWarVRResidentPageAccessTest
         resident_page_access.hpp resident_page_access_test.cpp)
     target_link_libraries(WorldAtWarVRResidentPageAccessTest PRIVATE wawvr_project_options psapi)
@@ -992,6 +1109,20 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
     add_test(NAME mod.physical_melee_stress
         COMMAND WorldAtWarVRPhysicalMeleeStressTest)
 
+    add_executable(WorldAtWarVRRightStickMeleeTest
+        right_stick_melee_test.cpp
+        camera_comfort_logic.cpp
+        current_head_local_controller_pose_logic.cpp
+        input_mapping.cpp
+        weapon_placement.cpp
+        "${CMAKE_SOURCE_DIR}/src/xr/xr_math.cpp")
+    target_link_libraries(WorldAtWarVRRightStickMeleeTest
+        PRIVATE wawvr_project_options wawvr_t4)
+    target_include_directories(WorldAtWarVRRightStickMeleeTest
+        PRIVATE "${CMAKE_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.right_stick_melee
+        COMMAND WorldAtWarVRRightStickMeleeTest)
+
     add_executable(WorldAtWarVRReloadFeedbackLogicTest
         reload_feedback_logic.cpp reload_feedback_logic.hpp
         reload_feedback_logic_test.cpp)
@@ -1199,6 +1330,18 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
                 NAME mod.weapon_placement
                 COMMAND WorldAtWarVRWeaponPlacementTest
             )
+
+            add_executable(WorldAtWarVRWeaponHandlingContinuityTest
+                weapon_handling_continuity_test.cpp weapon_placement.cpp
+                weapon_grip_logic.cpp controller_state.cpp
+                current_head_local_controller_pose_logic.cpp
+                "${CMAKE_SOURCE_DIR}/src/xr/xr_math.cpp")
+            target_link_libraries(WorldAtWarVRWeaponHandlingContinuityTest
+                PRIVATE wawvr_project_options wawvr_t4)
+            target_include_directories(WorldAtWarVRWeaponHandlingContinuityTest
+                PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_SOURCE_DIR}/src/xr")
+            add_test(NAME mod.weapon_handling_continuity
+                COMMAND WorldAtWarVRWeaponHandlingContinuityTest)
 
             add_executable(
                 WorldAtWarVRWeaponGripLogicTest

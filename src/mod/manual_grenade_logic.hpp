@@ -74,6 +74,9 @@ struct ManualGrenadeGestureState final {
     ManualGrenadeSlot held_slot{ManualGrenadeSlot::none};
     bool input_initialized{};
     bool trigger_was_held{};
+    // A contextual grab must never silently fall back to a fresh belt grenade
+    // if the native throwback window expires between sample and inventory read.
+    bool contextual_throwback{};
 };
 
 [[nodiscard]] bool manual_grenade_left_hip_contains(
@@ -99,7 +102,8 @@ struct ManualGrenadeGestureState final {
     const ManualGrenadePoint& left_hand_head_local_position,
     bool new_grab_blocked,
     ManualGrenadeGestureState* state,
-    ManualGrenadeEvent* event) noexcept;
+    ManualGrenadeEvent* event,
+    bool contextual_throwback_active = false) noexcept;
 
 // The native grenade-spawn hook calls this after consuming or timing out a
 // ReleasedPending interaction. Trigger baseline ownership is deliberately
@@ -109,6 +113,142 @@ struct ManualGrenadeGestureState final {
 
 void reset_manual_grenade_gesture(
     ManualGrenadeGestureState* state) noexcept;
+
+// Experimental contextual throwback is an enemy-object transaction, not an
+// ordinary frag-button fallback. A native pickup witness must prove that the
+// existing missile was consumed before either local simulation may fire. The
+// tombstone survives the visual/gesture transaction until both local native
+// states are idle, the trigger is released and their event queues have a
+// separately verified exact-generation drain witness.
+enum class ContextualThrowbackStage : std::uint8_t {
+    inactive,
+    waiting_for_pickup,
+    acquired,
+    dispatch_in_flight,
+    spent,
+    aborted,
+};
+
+enum class ContextualThrowbackPlayerState : std::uint8_t {
+    unrelated,
+    predicted,
+    authoritative,
+};
+
+enum class ContextualThrowbackFireDecision : std::uint8_t {
+    passthrough,
+    hold,
+    cancel,
+    allow_enemy,
+};
+
+// This receipt must come from a separately validated native event-ownership
+// adapter. A current weapon/owner, mod generation or wrapped event ordinal is
+// NOT such proof. The dormant runtime has no adapter and supplies no receipt.
+struct ContextualThrowbackNativeEventReceipt final {
+    bool identity_verified{};
+    std::uint64_t generation{};
+    std::uint64_t dispatch_receipt{};
+};
+
+// Native idle weapon states do not prove that old event39/event40 entries have
+// drained. Both native queues need an exact-generation drain witness before a
+// tombstone can disappear and permit a fresh transaction. Unknown stays held.
+struct ContextualThrowbackNativeDrainWitness final {
+    std::uint64_t generation{};
+    bool authoritative_queue_drained{};
+    bool predicted_queue_drained{};
+};
+
+struct ContextualThrowbackTransaction final {
+    ContextualThrowbackStage stage{ContextualThrowbackStage::inactive};
+    std::uint64_t generation{};
+    std::uint64_t began_milliseconds{};
+    std::uint64_t last_observed_milliseconds{};
+    std::uint64_t pickup_deadline_milliseconds{};
+    std::uint32_t weapon_index{};
+    std::int32_t native_owner{0x3FF};
+    std::int32_t native_window_at_begin{};
+    std::int32_t fuse_at_pickup{};
+    bool authoritative_fire_permitted{};
+    std::uint64_t dispatch_receipt{};
+};
+
+[[nodiscard]] bool begin_contextual_throwback(
+    std::uint64_t now_milliseconds,
+    std::uint64_t generation,
+    std::uint32_t weapon_index,
+    std::int32_t positive_native_window,
+    ContextualThrowbackTransaction* transaction) noexcept;
+
+// Must be called immediately BEFORE entering the native item-consumption
+// routine, not merely when observing its return. A stale generation leaves the
+// current transaction untouched; an expired or regressed clock tombstones the
+// matching transaction without allowing an enemy missile to be consumed.
+[[nodiscard]] bool validate_contextual_throwback_pickup_attempt(
+    std::uint64_t now_milliseconds,
+    std::uint64_t generation,
+    ContextualThrowbackTransaction* transaction) noexcept;
+
+[[nodiscard]] bool witness_contextual_throwback_pickup(
+    std::uint64_t now_milliseconds,
+    std::uint64_t generation,
+    std::uint32_t native_weapon_index,
+    std::int32_t native_owner,
+    std::int32_t unchanged_native_fuse,
+    bool source_was_live_missile,
+    bool source_was_freed_by_native_pickup,
+    ContextualThrowbackTransaction* transaction) noexcept;
+
+[[nodiscard]] ContextualThrowbackFireDecision
+evaluate_contextual_throwback_fire(
+    std::uint64_t now_milliseconds,
+    ContextualThrowbackPlayerState player_state,
+    std::uint32_t native_weapon_index,
+    std::int32_t native_owner,
+    ContextualThrowbackTransaction* transaction) noexcept;
+
+// Reserves one authoritative dispatch permission without marking it spent
+// before the native void handler executes. No verified receipt means no native
+// dispatch; this is an intentionally unavailable boundary in the dormant code.
+[[nodiscard]] bool consume_contextual_throwback_spawn(
+    std::uint32_t native_weapon_index,
+    ContextualThrowbackTransaction* transaction,
+    const ContextualThrowbackNativeEventReceipt* receipt = nullptr) noexcept;
+
+// Acknowledges the exact same handler only AFTER its native call has returned.
+// It is not a grenade-spawn, inventory or remaining-fuse acceptance witness.
+[[nodiscard]] bool complete_contextual_throwback_dispatch(
+    const ContextualThrowbackNativeEventReceipt& receipt,
+    ContextualThrowbackTransaction* transaction) noexcept;
+
+void abort_contextual_throwback(
+    ContextualThrowbackTransaction* transaction) noexcept;
+
+[[nodiscard]] bool retire_contextual_throwback_tombstone(
+    bool physical_trigger_released,
+    bool authoritative_native_idle,
+    bool predicted_native_idle,
+    ContextualThrowbackTransaction* transaction,
+    const ContextualThrowbackNativeDrainWitness* drain = nullptr) noexcept;
+
+// Read-only comparison in one independently verified, unwrapped native level-
+// time domain. Argument equality alone cannot establish the native scheduled
+// expiry: G_FireGrenade can consume playerState+0x48 instead of that argument.
+// Past expiry and zero/negative remaining cook time are not refreshed/clamped.
+struct ContextualThrowbackExpiryWitness final {
+    bool source_identity_verified{};
+    bool spawned_missile_identity_verified{};
+    bool same_native_clock_verified{};
+    std::int64_t source_scheduled_expiry{};
+    std::int64_t acquisition_native_time{};
+    std::int64_t spawn_native_time{};
+    std::int64_t spawned_scheduled_expiry{};
+    std::int32_t remaining_fuse_at_spawn{};
+};
+
+[[nodiscard]] bool contextual_throwback_scheduled_expiry_preserved(
+    const ContextualThrowbackExpiryWitness& witness) noexcept;
 
 struct ManualGrenadeVelocitySample final {
     bool valid{};

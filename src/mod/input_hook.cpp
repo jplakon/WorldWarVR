@@ -15,6 +15,7 @@
 #include "support_animation_policy.hpp"
 #include "tank_control_logic.hpp"
 #include "t4_layout_selector.hpp"
+#include "t4_menu_input.hpp"
 #include "tracking_anchor_sync.hpp"
 #include "vehicle_snapshot_reader.hpp"
 #include "weapon_hook.hpp"
@@ -59,6 +60,7 @@ std::atomic<bool> g_logged_first_body_yaw_sync{false};
 std::atomic<bool> g_logged_first_right_stick{false};
 std::atomic<bool> g_logged_first_smooth_turn{false};
 std::atomic<bool> g_logged_first_controller_owned_support{false};
+std::atomic<bool> g_logged_melee_policy{false};
 std::uintptr_t g_gameplay_refdef_origin_address = 0;
 std::uintptr_t g_gameplay_refdef_axis_address = 0;
 std::uintptr_t g_client_view_yaw_address = 0;
@@ -72,12 +74,24 @@ SmoothTurnState g_smooth_turn_state{};
 TurnMode g_turn_mode = TurnMode::Snap;
 SprintLatchState g_sprint_latch_state{};
 PhysicalMeleeState g_physical_melee_state{};
+RightStickMeleeState g_right_stick_melee_state{};
+bool g_right_stick_melee_enabled = false;
+std::atomic<std::uint64_t> g_right_stick_melee_command_count{0};
+std::atomic<std::uint64_t> g_physical_melee_command_count{0};
+std::atomic<std::uint64_t> g_native_melee_edge_count{0};
+std::atomic<std::uint64_t> g_suppressed_right_stick_melee_count{0};
 SatchelInputState g_satchel_input_state{};
 static_assert(kSatchelNativeThrowButton == wawvr::t4::button_mask(
     wawvr::t4::UsercmdButton::throw_remote_charge));
 bool g_snap_gate_diagnostic_latched = false;
 bool g_right_stick_melee_was_held = false;
 bool g_native_melee_was_held = false;
+bool g_sprint_request_was_active = false;
+bool g_locomotion_was_active = false;
+bool g_gameplay_motion_diagnostics_enabled = false;
+bool g_native_sprint_observation_layout_verified = false;
+std::uint64_t g_sprint_last_diagnostic_milliseconds = 0;
+RefdefMotionTelemetryState g_refdef_motion_telemetry{};
 std::uintptr_t g_tank_predicted_ps = 0;
 std::uintptr_t g_tank_entities = 0;
 std::uintptr_t g_tank_vehicle_info = 0;
@@ -236,6 +250,24 @@ private:
         std::wstring_view(value.data(), static_cast<std::size_t>(length)));
 }
 
+[[nodiscard]] bool requested_right_stick_melee() noexcept {
+    std::array<wchar_t, 8> value{};
+    const DWORD length = GetEnvironmentVariableW(
+        kRightStickMeleeEnvironmentVariable, value.data(),
+        static_cast<DWORD>(value.size()));
+    return length > 0 && length < value.size() &&
+        right_stick_melee_from_setting(std::wstring_view(
+            value.data(), static_cast<std::size_t>(length)));
+}
+
+[[nodiscard]] bool requested_gameplay_motion_diagnostics() noexcept {
+    std::array<wchar_t, 2> value{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"WAWVR_GAMEPLAY_DIAGNOSTICS", value.data(),
+        static_cast<DWORD>(value.size()));
+    return length == 1 && value[0] == L'1';
+}
+
 [[nodiscard]] bool protection_is_writable(const DWORD protection) noexcept {
     const DWORD access = protection & 0xffU;
     return access == PAGE_READWRITE || access == PAGE_WRITECOPY ||
@@ -298,6 +330,53 @@ template <typename T>
     if (!readable_range(reinterpret_cast<const void*>(address), sizeof(T))) return false;
     std::memcpy(value, reinterpret_cast<const void*>(address), sizeof(T));
     return true;
+}
+
+[[nodiscard]] bool native_sprint_netfields_match(
+    const wawvr::t4::ValidatedBindings& bindings) noexcept {
+    struct Descriptor final {
+        wawvr::t4::Rva rva;
+        std::array<std::uint32_t, 4> words;
+    };
+    constexpr std::array<Descriptor, 10> descriptors{{
+        {0x00436B40, {0x00898100, 0x20, 0xFFFFFFA8, 3}},
+        {0x00436B50, {0x008980F4, 0x24, 0xFFFFFFA8, 3}},
+        {0x00436B60, {0x008980E8, 0x28, 0xFFFFFFA8, 3}},
+        {0x00436B90, {0x008980C4, 0x2C, 0xFFFFFFA8, 3}},
+        {0x00436B80, {0x008980D0, 0x30, 0xFFFFFFA8, 3}},
+        {0x00436BD0, {0x0089807C, 0x34, 0xFFFFFFA8, 3}},
+        {0x00436D00, {0x00897FA8, 0x0C, 0x1D, 0}},
+        {0x00436FE0, {0x00897D48, 0x88C, 0xFFFFFF9F, 0}},
+        {0x00436FF0, {0x00897D2C, 0x888, 0xFFFFFF9F, 0}},
+        {0x00437020, {0x00897CF4, 0x890, 0x0E, 0}},
+    }};
+    for (const auto& descriptor : descriptors) {
+        const auto address = bindings.module().address(descriptor.rva, sizeof(descriptor.words));
+        if (!address.has_value() ||
+            !readable_range(reinterpret_cast<const void*>(*address), sizeof(descriptor.words)) ||
+            std::memcmp(reinterpret_cast<const void*>(*address), descriptor.words.data(),
+                        sizeof(descriptor.words)) != 0) return false;
+    }
+    constexpr std::array<std::uint32_t, 4> button_up{0x00897B38, 0x880, 1, 2};
+    constexpr std::array<std::uint32_t, 4> delay{0x00897C90, 0x884, 1, 2};
+    for (const auto& descriptor : {Descriptor{0x004371D0, button_up}, Descriptor{0x00437080, delay}}) {
+        const auto address = bindings.module().address(descriptor.rva, sizeof(descriptor.words));
+        if (!address.has_value() ||
+            !readable_range(reinterpret_cast<const void*>(*address), sizeof(descriptor.words)) ||
+            std::memcmp(reinterpret_cast<const void*>(*address), descriptor.words.data(),
+                        sizeof(descriptor.words)) != 0) return false;
+    }
+    return true;
+}
+
+[[nodiscard]] NativeSpSprintObservation read_native_sp_sprint_observation() noexcept {
+    if (!g_native_sprint_observation_layout_verified || g_tank_entities == 0) return {};
+    VehicleSnapshotReader reader;
+    std::uint32_t client = 0;
+    std::array<std::byte, kNativeSpSprintObservationSpan> snapshot{};
+    if (!reader.read(g_tank_entities + 0x180, &client) || client < 0x10000 ||
+        !reader.read(static_cast<std::uintptr_t>(client), &snapshot)) return {};
+    return decode_native_sp_sprint_observation(snapshot);
 }
 
 struct TankContext {
@@ -639,9 +718,13 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
     }
     const bool native_melee_before_vr = wawvr::t4::has_button(
         *command, wawvr::t4::UsercmdButton::melee);
+    const bool native_ads_before_vr = wawvr::t4::has_button(
+        *command, wawvr::t4::UsercmdButton::aim_down_sights);
     if (native_melee_before_vr && !g_native_melee_was_held) {
+        ++g_native_melee_edge_count;
         input_diagnostic_log(
-            "Native T4 melee entered the completed usercmd before VR input injection");
+            "Native T4 melee entered the completed usercmd before VR input injection: source=native count=%llu",
+            static_cast<unsigned long long>(g_native_melee_edge_count));
     }
     g_native_melee_was_held = native_melee_before_vr;
 
@@ -700,6 +783,7 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
             reset_smooth_turn(&g_smooth_turn_state);
             reset_sprint_latch(&g_sprint_latch_state);
             reset_physical_melee_gesture(&g_physical_melee_state);
+            reset_right_stick_melee(&g_right_stick_melee_state);
             g_right_stick_melee_was_held = false;
             apply_tank_command(*command, tank_frame, owned, now, tank);
             return;
@@ -713,6 +797,7 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
             reset_smooth_turn(&g_smooth_turn_state);
             reset_sprint_latch(&g_sprint_latch_state);
             reset_physical_melee_gesture(&g_physical_melee_state);
+            reset_right_stick_melee(&g_right_stick_melee_state);
             g_right_stick_melee_was_held = false;
             return;
         }
@@ -767,6 +852,7 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
         reset_smooth_turn(&g_smooth_turn_state);
         reset_sprint_latch(&g_sprint_latch_state);
         reset_physical_melee_gesture(&g_physical_melee_state);
+        reset_right_stick_melee(&g_right_stick_melee_state);
         g_right_stick_melee_was_held = false;
         // Service grenade ownership even when Present has invalidated its
         // publication. This clears a stale held/pending gesture instead of
@@ -786,6 +872,18 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
     const std::uint64_t now_milliseconds = GetTickCount64();
     const bool controller_frame_current =
         controller_frame_is_current(snapshot, now_milliseconds);
+    if (controller_frame_current &&
+        !g_logged_melee_policy.exchange(true, std::memory_order_acq_rel)) {
+        // The install path precedes the present logger. Emit the receipt on
+        // the first real XR input publication so it reaches WorldWarVR.log,
+        // not only the debugger; never perform new logging during shutdown.
+        input_diagnostic_log(
+            "Melee input policy: rightStickClick=%s physicalGestures=enabled nativeKeyboardMouse=preserved; explicit WAWVR_RIGHT_STICK_MELEE=1 required; click release-to-rearm",
+            g_right_stick_melee_enabled ? "enabled" : "disabled");
+        input_diagnostic_log(
+            "Sprint input policy: fresh L3 click latch; preMovementQueue=400ms neutralGrace=100ms VR-support ADS suppressed while sprint requested; native stamina/stance/script restrictions preserved; continuousMotionDiagnostics=%s",
+            g_gameplay_motion_diagnostics_enabled ? "enabled" : "disabled");
+    }
     // A validated mounted-gun route gives the right controller exclusive
     // ownership of the barrel. Body-yaw catch-up and ordinary snap/smooth
     // turning would otherwise add a second right-stick/head-derived rotation
@@ -807,12 +905,16 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
         sizeof(camera_axis));
     const auto& left_hand = snapshot.frame.actions.hands[
         static_cast<std::uint32_t>(wawvr::xr::Hand::Left)];
+    const bool mission_selector_owns_stick =
+        campaign_support_selector_consumes_movement(snapshot.frame.actions.sequence);
     const bool sprint_latched = update_sprint_latch(
-        gameplay_controller_allowed && controller_frame_current,
+        gameplay_controller_allowed && controller_frame_current &&
+            !mission_selector_owns_stick && !mounted_controller_route,
         snapshot.frame.actions.sequence,
         left_hand.stick,
         left_hand.stick_click,
-        &g_sprint_latch_state);
+        &g_sprint_latch_state,
+        now_milliseconds);
     float turn_degrees = 0.0F;
     if (g_client_view_yaw_address != 0 && gameplay_state_readable &&
         writable_range(
@@ -985,18 +1087,69 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
         g_snap_turn_state.armed = false;
         reset_smooth_turn(&g_smooth_turn_state);
     }
+    // Resolve reload ownership before the optional melee binding. A press
+    // made while manipulating ammo must be released and pressed again after
+    // the interaction, rather than becoming a delayed knife attack.
+    const ManualReloadGameplayPolicy reload_policy =
+        read_manual_reload_gameplay_policy(static_cast<std::int32_t>(command->weapon));
+    const auto& right_hand = snapshot.frame.actions.hands[
+        static_cast<std::uint32_t>(wawvr::xr::Hand::Right)];
+    const bool right_stick_click_held =
+        right_hand.stick_click.active && right_hand.stick_click.current;
+    const bool melee_interaction_reserved =
+        reload_policy.force_reload_button || reload_policy.blocks_attack ||
+        reload_policy.reserves_right_grip ||
+        reload_policy.reserves_left_grip ||
+        reload_policy.blocks_new_left_trigger_action ||
+        manual_grenade_reserves_left_hand() ||
+        wawvr::t4::has_button(*command, wawvr::t4::UsercmdButton::reload) ||
+        (right_hand.primary.active && right_hand.primary.current);
+    float right_melee_pitch = 0.0F;
+    float right_melee_yaw = 0.0F;
+    const bool right_melee_tracking_valid = snapshot.frame.views_valid &&
+        right_hand.grip.active && right_hand.grip.position_valid &&
+        std::isfinite(right_hand.grip.pose.position.x) &&
+        std::isfinite(right_hand.grip.pose.position.y) &&
+        std::isfinite(right_hand.grip.pose.position.z) &&
+        controller_aim_degrees(snapshot, camera_axis,
+                               &right_melee_pitch, &right_melee_yaw);
+    const bool right_stick_melee_pressed = update_right_stick_melee(
+        g_right_stick_melee_enabled,
+        gameplay_controller_allowed && controller_frame_current &&
+            right_melee_tracking_valid && !mounted_controller_route,
+        melee_interaction_reserved, snapshot.frame.actions.sequence,
+        right_hand.stick_click, &g_right_stick_melee_state);
     ControllerInputResult applied{};
     if (gameplay_controller_allowed) {
+        ControllerFrameSnapshot gameplay_snapshot = snapshot;
+        if (mission_selector_owns_stick) {
+            gameplay_snapshot.frame.actions.hands[
+                static_cast<std::uint32_t>(wawvr::xr::Hand::Left)].stick.current = {};
+        }
         applied = apply_controller_input(
-            *command, snapshot, camera_axis, now_milliseconds);
+            *command, gameplay_snapshot, camera_axis, now_milliseconds,
+            right_stick_melee_pressed);
     }
-    if (applied.melee_button_held && !g_right_stick_melee_was_held) {
+    if (applied.melee_button_held) {
+        ++g_right_stick_melee_command_count;
         input_diagnostic_log(
-            "Right-stick click triggered native T4 melee: actionSequence=%llu",
+            "Right-stick click triggered native T4 melee: actionSequence=%llu source=right-stick-click commandCount=%llu",
             static_cast<unsigned long long>(
-                snapshot.frame.actions.sequence));
+                snapshot.frame.actions.sequence),
+            static_cast<unsigned long long>(g_right_stick_melee_command_count));
+    } else if (right_stick_click_held && !g_right_stick_melee_was_held &&
+               controller_frame_current) {
+        ++g_suppressed_right_stick_melee_count;
+        input_diagnostic_log(
+            "Right-stick melee suppressed: enabled=%d owned=%d tracking=%d reserved=%d actionSequence=%llu suppressedPressCount=%llu",
+            g_right_stick_melee_enabled ? 1 : 0,
+            gameplay_controller_allowed ? 1 : 0,
+            right_melee_tracking_valid ? 1 : 0,
+            melee_interaction_reserved ? 1 : 0,
+            static_cast<unsigned long long>(snapshot.frame.actions.sequence),
+            static_cast<unsigned long long>(g_suppressed_right_stick_melee_count));
     }
-    g_right_stick_melee_was_held = applied.melee_button_held;
+    g_right_stick_melee_was_held = right_stick_click_held;
     if (applied.weapon_aim_applied) {
         // Capture the raw right-controller ray before the ordinary handheld
         // two-hand/viewmodel path can replace it. Mounted guns suppress that
@@ -1011,8 +1164,6 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
     // These adjacent policies concern the same command and contain no native
     // engine call. Resolve its exact weapon identity once, then consume all
     // flags before grenade/native work can advance the gameplay state.
-    const ManualReloadGameplayPolicy reload_policy =
-        read_manual_reload_gameplay_policy(static_cast<std::int32_t>(command->weapon));
     const bool exact_pistol = weapon_identity_valid &&
         pistol_support_pose_for_weapon_name_buffer({
             weapon_identity.name.data(), weapon_identity.name.size()});
@@ -1040,7 +1191,8 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
             static_cast<std::uint32_t>(weapon_identity.weapon_index)
         : 0;
     const PhysicalMeleeGesture physical_melee = update_physical_melee_gesture(
-        gameplay_controller_allowed && controller_frame_current,
+        gameplay_controller_allowed && controller_frame_current &&
+            !melee_interaction_reserved,
         snapshot, now_milliseconds, &g_physical_melee_state,
         controller_weapon_uses_support_pose(), melee_pistol_identity);
     if (reload_policy.force_reload_button) {
@@ -1135,21 +1287,74 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
         applied.gameplay_buttons_applied = true;
     }
     if (sprint_latched) {
-        const bool native_or_physical_sprint_already_set =
-            wawvr::t4::has_button(
-                *command, wawvr::t4::UsercmdButton::sprint);
-        wawvr::t4::add_button(
-            *command, wawvr::t4::UsercmdButton::sprint);
+        // Holding the support grip is a physical ownership choice, not a
+        // request to cancel locomotion. Our automatic support ADS bit used to
+        // fight the sprint bit on every command. Only remove VR-injected ADS;
+        // an actual native keyboard/mouse ADS command remains native-owned.
         applied.gameplay_buttons_applied =
-            applied.gameplay_buttons_applied ||
-            !native_or_physical_sprint_already_set;
+            apply_controller_sprint_request(
+                *command, true, native_ads_before_vr) ||
+            applied.gameplay_buttons_applied;
         if (!g_logged_first_sprint_latch.exchange(
                 true, std::memory_order_acq_rel)) {
             OutputDebugStringA(
                 "WorldAtWarVR: L3 click-to-sprint latch active until locomotion stick returns to neutral\n");
         }
     }
+    const bool locomotion_active = command->forward_move != 0 || command->right_move != 0;
+    if (!gameplay_controller_allowed || !controller_frame_current) {
+        g_refdef_motion_telemetry = {};
+    }
+    if (g_gameplay_motion_diagnostics_enabled &&
+        (locomotion_active || g_locomotion_was_active ||
+         sprint_latched || g_sprint_request_was_active) &&
+        (sprint_latched != g_sprint_request_was_active ||
+         locomotion_active != g_locomotion_was_active ||
+         now_milliseconds - g_sprint_last_diagnostic_milliseconds >= 250)) {
+        const auto motion = sample_refdef_motion_telemetry(
+            gameplay_controller_allowed && controller_frame_current,
+            camera_origin, now_milliseconds, &g_refdef_motion_telemetry);
+        std::int32_t native_weapon_state = -1;
+        if constexpr (std::is_same_v<Command, wawvr::t4::UsercmdSp>) {
+            if (g_tank_predicted_ps != 0) {
+                static_cast<void>(read_tank_value(
+                    g_tank_predicted_ps + 0x108, &native_weapon_state));
+            }
+        }
+        input_diagnostic_log(
+            "SprintDiag completed native command: requested=%d sequence=%llu serverTime=%d L3=%d move=%d/%d sprintBit=%d adsBit=%d nativeADS=%d support=%d weaponState=%d motionSource=render-refdef-not-playerstate motionValid=%d horizontalSpeed=%.3f units/s distance=%.3f units elapsed=%llums origin=(%.3f,%.3f,%.3f); head/script motion can contaminate; stamina/stance/script eligibility remain native-owned",
+            sprint_latched ? 1 : 0,
+            static_cast<unsigned long long>(snapshot.frame.actions.sequence),
+            command->server_time,
+            left_hand.stick_click.active && left_hand.stick_click.current ? 1 : 0,
+            static_cast<int>(command->forward_move),
+            static_cast<int>(command->right_move),
+            wawvr::t4::has_button(*command, wawvr::t4::UsercmdButton::sprint) ? 1 : 0,
+            wawvr::t4::has_button(*command, wawvr::t4::UsercmdButton::aim_down_sights) ? 1 : 0,
+            native_ads_before_vr ? 1 : 0,
+            controller_weapon_uses_support_pose() ? 1 : 0,
+            native_weapon_state, motion.valid ? 1 : 0,
+            motion.horizontal_speed_units_per_second,
+            motion.horizontal_distance_units,
+            static_cast<unsigned long long>(motion.elapsed_milliseconds),
+            camera_origin.x, camera_origin.y, camera_origin.z);
+        if constexpr (std::is_same_v<Command, wawvr::t4::UsercmdSp>) {
+            const auto native = read_native_sp_sprint_observation();
+            input_diagnostic_log(
+                "SprintNativeDiag source=server-gclient-playerstate layoutVerified=%d valid=%d sequence=%llu commandTime=%d velocity=(%.3f,%.3f,%.3f) horizontalSpeed=%.3f units/s origin=(%.3f,%.3f,%.3f) pmFlagsRaw=0x%08X sprintButtonUpRequired=%d sprintDelay=%d lastSprintStart=%d lastSprintEnd=%d sprintStartMaxLength=%d; observation-only no guessed sprint mask",
+                g_native_sprint_observation_layout_verified ? 1 : 0, native.valid ? 1 : 0,
+                static_cast<unsigned long long>(snapshot.frame.actions.sequence),
+                native.command_time, native.velocity.x, native.velocity.y, native.velocity.z,
+                native.horizontal_speed_units_per_second, native.origin.x, native.origin.y,
+                native.origin.z, native.pm_flags, native.button_up_required, native.delay,
+                native.last_start, native.last_end, native.start_max_length);
+        }
+        g_sprint_last_diagnostic_milliseconds = now_milliseconds;
+    }
+    g_sprint_request_was_active = sprint_latched;
+    g_locomotion_was_active = locomotion_active;
     if (physical_melee != PhysicalMeleeGesture::none) {
+        ++g_physical_melee_command_count;
         const bool melee_already_set = wawvr::t4::has_button(
             *command, wawvr::t4::UsercmdButton::melee);
         wawvr::t4::add_button(
@@ -1161,7 +1366,7 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
         applied.gameplay_buttons_applied =
             applied.gameplay_buttons_applied || !melee_already_set;
         input_diagnostic_log(
-            "Physical %s triggered native T4 melee: actionSequence=%llu sampleMs=%llu relativeTravel=%.3fm worldTravel=%.3fm speed=%.2fm/s outward=%.3fm grips=%d/%d",
+            "Physical %s triggered native T4 melee: actionSequence=%llu sampleMs=%llu relativeTravel=%.3fm worldTravel=%.3fm speed=%.2fm/s outward=%.3fm grips=%d/%d source=physical-gesture commandCount=%llu",
             physical_melee == PhysicalMeleeGesture::two_hand_thrust
                 ? "two-hand rifle thrust"
                 : physical_melee == PhysicalMeleeGesture::right_hand_pistol_strike
@@ -1175,7 +1380,8 @@ void apply_controller_usercmd_from_bridge(Command* const command) noexcept {
             g_physical_melee_state.last_trigger_speed_meters_per_second,
             g_physical_melee_state.last_trigger_outward_travel_meters,
             g_physical_melee_state.right_grip_latched ? 1 : 0,
-            g_physical_melee_state.left_grip_latched ? 1 : 0);
+            g_physical_melee_state.left_grip_latched ? 1 : 0,
+            static_cast<unsigned long long>(g_physical_melee_command_count));
     }
     if (applied.weapon_aim_applied) {
         float final_pitch = 0.0F;
@@ -1352,13 +1558,27 @@ InputHookInstallResult install_controller_input_hook(
         ? kT4MpActiveConnectionState
         : kT4SpActiveConnectionState;
     g_turn_mode = requested_turn_mode();
+    g_right_stick_melee_enabled = requested_right_stick_melee();
+    g_gameplay_motion_diagnostics_enabled = requested_gameplay_motion_diagnostics();
+    g_native_sprint_observation_layout_verified = !multiplayer &&
+        native_sprint_netfields_match(bindings);
+    g_logged_melee_policy.store(false, std::memory_order_release);
+    g_right_stick_melee_command_count = 0;
+    g_physical_melee_command_count = 0;
+    g_native_melee_edge_count = 0;
+    g_suppressed_right_stick_melee_count = 0;
     g_satchel_input_state = {};
     reset_snap_turn(&g_snap_turn_state);
     reset_smooth_turn(&g_smooth_turn_state);
     reset_sprint_latch(&g_sprint_latch_state);
     reset_physical_melee_gesture(&g_physical_melee_state);
+    reset_right_stick_melee(&g_right_stick_melee_state);
     g_right_stick_melee_was_held = false;
     g_native_melee_was_held = false;
+    g_sprint_request_was_active = false;
+    g_locomotion_was_active = false;
+    g_sprint_last_diagnostic_milliseconds = 0;
+    g_refdef_motion_telemetry = {};
     g_logged_first_sprint_latch.store(false, std::memory_order_release);
     g_logged_first_smooth_turn.store(false, std::memory_order_release);
     g_logged_first_body_yaw_sync.store(false, std::memory_order_release);
@@ -1381,6 +1601,7 @@ InputHookInstallResult install_controller_input_hook(
         g_active_connection_state = kT4SpActiveConnectionState;
         reset_sprint_latch(&g_sprint_latch_state);
         reset_physical_melee_gesture(&g_physical_melee_state);
+        reset_right_stick_melee(&g_right_stick_melee_state);
         g_right_stick_melee_was_held = false;
         g_native_melee_was_held = false;
     };
@@ -1530,6 +1751,7 @@ void request_controller_input_shutdown() noexcept {
     g_controller_input_enabled.store(false, std::memory_order_release);
     reset_sprint_latch(&g_sprint_latch_state);
     reset_physical_melee_gesture(&g_physical_melee_state);
+    reset_right_stick_melee(&g_right_stick_melee_state);
     g_right_stick_melee_was_held = false;
     g_native_melee_was_held = false;
 }

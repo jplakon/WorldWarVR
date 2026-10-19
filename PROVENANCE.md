@@ -52,8 +52,11 @@ ownership assumptions intact.
 - Release role: none; it is not a build, test, packaging, or runtime dependency
 
 Only focused, reviewed, license-compatible source incorporated into this
-repository is distributed. Every public build can be reproduced from its
-matching tag without access to an external workspace. Each substantially
+repository is distributed. Matching native and launcher source, dependency
+contents and build instructions accompany each public binary. Retained tested
+binaries are not promised byte-reproducible across compiler/toolchain paths;
+the release component map identifies the exact source and shipped binary hashes.
+Each substantially
 adapted change must identify its source repository and pinned commit,
 destination, behavioral changes, retained copyright and license notices, and
 required tests.

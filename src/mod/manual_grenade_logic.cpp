@@ -131,7 +131,8 @@ bool update_manual_grenade_gesture(
     const ManualGrenadePoint& left_hand_head_local_position,
     const bool new_grab_blocked,
     ManualGrenadeGestureState* const state,
-    ManualGrenadeEvent* const event) noexcept {
+    ManualGrenadeEvent* const event,
+    const bool contextual_throwback_active) noexcept {
     if (state == nullptr || event == nullptr) {
         return false;
     }
@@ -171,11 +172,13 @@ bool update_manual_grenade_gesture(
 
     if (state->stage == ManualGrenadeStage::ready && pressed_edge &&
         !new_grab_blocked) {
-        const ManualGrenadeSlot slot =
-            manual_grenade_slot_at(left_hand_head_local_position);
+        const ManualGrenadeSlot slot = contextual_throwback_active
+            ? ManualGrenadeSlot::frag
+            : manual_grenade_slot_at(left_hand_head_local_position);
         if (slot == ManualGrenadeSlot::frag) {
             state->stage = ManualGrenadeStage::holding;
             state->held_slot = slot;
+            state->contextual_throwback = contextual_throwback_active;
             *event = ManualGrenadeEvent::grab_frag;
         } else if (slot == ManualGrenadeSlot::tactical) {
             state->stage = ManualGrenadeStage::holding;
@@ -198,6 +201,7 @@ bool rearm_manual_grenade_gesture(
     }
     state->stage = ManualGrenadeStage::ready;
     state->held_slot = ManualGrenadeSlot::none;
+    state->contextual_throwback = false;
     return true;
 }
 
@@ -206,6 +210,226 @@ void reset_manual_grenade_gesture(
     if (state != nullptr) {
         *state = {};
     }
+}
+
+bool begin_contextual_throwback(
+    const std::uint64_t now_milliseconds,
+    const std::uint64_t generation,
+    const std::uint32_t weapon_index,
+    const std::int32_t positive_native_window,
+    ContextualThrowbackTransaction* const transaction) noexcept {
+    if (transaction == nullptr ||
+        transaction->stage != ContextualThrowbackStage::inactive ||
+        now_milliseconds == 0 || generation == 0 ||
+        weapon_index == 0 || weapon_index > 127 ||
+        positive_native_window <= 0 || positive_native_window > 60000) {
+        return false;
+    }
+    const auto wait = (std::min)(
+        static_cast<std::uint64_t>(positive_native_window), 1000ULL);
+    if (now_milliseconds >
+        (std::numeric_limits<std::uint64_t>::max)() - wait) {
+        return false;
+    }
+    *transaction = {};
+    transaction->stage = ContextualThrowbackStage::waiting_for_pickup;
+    transaction->generation = generation;
+    transaction->began_milliseconds = now_milliseconds;
+    transaction->last_observed_milliseconds = now_milliseconds;
+    transaction->weapon_index = weapon_index;
+    transaction->native_window_at_begin = positive_native_window;
+    transaction->pickup_deadline_milliseconds = now_milliseconds + wait;
+    return true;
+}
+
+bool validate_contextual_throwback_pickup_attempt(
+    const std::uint64_t now_milliseconds,
+    const std::uint64_t generation,
+    ContextualThrowbackTransaction* const transaction) noexcept {
+    if (transaction == nullptr || generation == 0 ||
+        transaction->generation != generation ||
+        transaction->stage != ContextualThrowbackStage::waiting_for_pickup) {
+        return false;
+    }
+    if (transaction->began_milliseconds == 0 ||
+        transaction->last_observed_milliseconds < transaction->began_milliseconds ||
+        now_milliseconds < transaction->last_observed_milliseconds ||
+        now_milliseconds >= transaction->pickup_deadline_milliseconds) {
+        transaction->stage = ContextualThrowbackStage::aborted;
+        return false;
+    }
+    transaction->last_observed_milliseconds = now_milliseconds;
+    return true;
+}
+
+bool witness_contextual_throwback_pickup(
+    const std::uint64_t now_milliseconds,
+    const std::uint64_t generation,
+    const std::uint32_t native_weapon_index,
+    const std::int32_t native_owner,
+    const std::int32_t unchanged_native_fuse,
+    const bool source_was_live_missile,
+    const bool source_was_freed_by_native_pickup,
+    ContextualThrowbackTransaction* const transaction) noexcept {
+    if (!validate_contextual_throwback_pickup_attempt(
+            now_milliseconds, generation, transaction)) {
+        return false;
+    }
+    if (native_weapon_index != transaction->weapon_index ||
+        native_owner < 0 || native_owner >= 0x3FF ||
+        unchanged_native_fuse <= 0 || unchanged_native_fuse > 60000 ||
+        unchanged_native_fuse > transaction->native_window_at_begin ||
+        !source_was_live_missile || !source_was_freed_by_native_pickup) {
+        transaction->stage = ContextualThrowbackStage::aborted;
+        return false;
+    }
+    transaction->native_owner = native_owner;
+    transaction->fuse_at_pickup = unchanged_native_fuse;
+    transaction->stage = ContextualThrowbackStage::acquired;
+    return true;
+}
+
+ContextualThrowbackFireDecision evaluate_contextual_throwback_fire(
+    const std::uint64_t now_milliseconds,
+    const ContextualThrowbackPlayerState player_state,
+    const std::uint32_t native_weapon_index,
+    const std::int32_t native_owner,
+    ContextualThrowbackTransaction* const transaction) noexcept {
+    using Decision = ContextualThrowbackFireDecision;
+    using Stage = ContextualThrowbackStage;
+    if (transaction == nullptr ||
+        transaction->stage == Stage::inactive ||
+        player_state == ContextualThrowbackPlayerState::unrelated) {
+        return Decision::passthrough;
+    }
+    if (player_state != ContextualThrowbackPlayerState::predicted &&
+        player_state != ContextualThrowbackPlayerState::authoritative) {
+        return Decision::hold;
+    }
+    if (transaction->stage == Stage::spent ||
+        transaction->stage == Stage::aborted ||
+        transaction->stage == Stage::dispatch_in_flight ||
+        transaction->authoritative_fire_permitted) {
+        // A queued event39 reads CURRENT owner/fuse, not immutable event data.
+        // Never enter native cancel while dispatch is unresolved, including on
+        // mismatch, clock regression or teardown. Even after handler return,
+        // idle states alone cannot prove that its old event queues are empty.
+        return Decision::hold;
+    }
+    if (transaction->stage == Stage::waiting_for_pickup) {
+        if (!validate_contextual_throwback_pickup_attempt(
+                now_milliseconds, transaction->generation, transaction)) {
+            return Decision::hold;
+        }
+        return Decision::hold;
+    }
+    if (transaction->stage != Stage::acquired ||
+        now_milliseconds < transaction->last_observed_milliseconds) {
+        transaction->stage = Stage::aborted;
+        return Decision::hold;
+    }
+    transaction->last_observed_milliseconds = now_milliseconds;
+    if (native_weapon_index != transaction->weapon_index ||
+        native_owner != transaction->native_owner || native_owner == 0x3FF) {
+        // The prediction copy can lag the accepted server pickup. Never let
+        // its sentinel owner enter the native own-ammo branch while waiting.
+        if (player_state == ContextualThrowbackPlayerState::predicted &&
+            now_milliseconds <= transaction->pickup_deadline_milliseconds) {
+            return Decision::hold;
+        }
+        if (player_state == ContextualThrowbackPlayerState::authoritative) {
+            transaction->stage = Stage::aborted;
+        }
+        return Decision::hold;
+    }
+    if (player_state == ContextualThrowbackPlayerState::authoritative) {
+        transaction->authoritative_fire_permitted = true;
+    }
+    // Prediction may replay a usercmd. Do not treat matching prediction replay
+    // as a second authoritative missile; the spawn seam is separately one-use.
+    return Decision::allow_enemy;
+}
+
+bool consume_contextual_throwback_spawn(
+    const std::uint32_t native_weapon_index,
+    ContextualThrowbackTransaction* const transaction,
+    const ContextualThrowbackNativeEventReceipt* const receipt) noexcept {
+    if (transaction == nullptr ||
+        transaction->stage != ContextualThrowbackStage::acquired ||
+        !transaction->authoritative_fire_permitted ||
+        native_weapon_index != transaction->weapon_index ||
+        receipt == nullptr || !receipt->identity_verified ||
+        receipt->generation == 0 ||
+        receipt->generation != transaction->generation ||
+        receipt->dispatch_receipt == 0 ||
+        transaction->dispatch_receipt != 0) {
+        return false;
+    }
+    transaction->dispatch_receipt = receipt->dispatch_receipt;
+    transaction->stage = ContextualThrowbackStage::dispatch_in_flight;
+    return true;
+}
+
+bool complete_contextual_throwback_dispatch(
+    const ContextualThrowbackNativeEventReceipt& receipt,
+    ContextualThrowbackTransaction* const transaction) noexcept {
+    if (transaction == nullptr || !receipt.identity_verified ||
+        receipt.generation == 0 ||
+        receipt.generation != transaction->generation ||
+        receipt.dispatch_receipt == 0 ||
+        receipt.dispatch_receipt != transaction->dispatch_receipt ||
+        transaction->stage != ContextualThrowbackStage::dispatch_in_flight) {
+        return false;
+    }
+    transaction->stage = ContextualThrowbackStage::spent;
+    return true;
+}
+
+void abort_contextual_throwback(
+    ContextualThrowbackTransaction* const transaction) noexcept {
+    if (transaction != nullptr &&
+        transaction->stage == ContextualThrowbackStage::waiting_for_pickup) {
+        transaction->stage = ContextualThrowbackStage::aborted;
+    }
+}
+
+bool retire_contextual_throwback_tombstone(
+    const bool physical_trigger_released,
+    const bool authoritative_native_idle,
+    const bool predicted_native_idle,
+    ContextualThrowbackTransaction* const transaction,
+    const ContextualThrowbackNativeDrainWitness* const drain) noexcept {
+    if (transaction == nullptr ||
+        (transaction->stage != ContextualThrowbackStage::spent &&
+         transaction->stage != ContextualThrowbackStage::aborted) ||
+        !physical_trigger_released || !authoritative_native_idle ||
+        !predicted_native_idle || drain == nullptr ||
+        drain->generation == 0 ||
+        drain->generation != transaction->generation ||
+        !drain->authoritative_queue_drained ||
+        !drain->predicted_queue_drained) {
+        return false;
+    }
+    *transaction = {};
+    return true;
+}
+
+bool contextual_throwback_scheduled_expiry_preserved(
+    const ContextualThrowbackExpiryWitness& witness) noexcept {
+    if (!witness.source_identity_verified ||
+        !witness.spawned_missile_identity_verified ||
+        !witness.same_native_clock_verified ||
+        witness.source_scheduled_expiry <= 0 ||
+        witness.acquisition_native_time < 0 ||
+        witness.spawn_native_time < witness.acquisition_native_time ||
+        witness.source_scheduled_expiry != witness.spawned_scheduled_expiry) {
+        return false;
+    }
+    // Both operands are nonnegative int64 values, so their difference cannot
+    // overflow. This checks the remaining native fuse without rewriting it or
+    // relating native level time to GetTickCount64's unrelated clock domain.
+    return witness.source_scheduled_expiry - witness.spawn_native_time ==
+        static_cast<std::int64_t>(witness.remaining_fuse_at_spawn);
 }
 
 void clear_manual_grenade_velocity_history(

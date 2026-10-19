@@ -20,11 +20,13 @@ struct NativeGameplayCommandState final {
     bool weapon_next_was_held{};
     bool weapon_next_consumed_by_mission_chord{};
     bool mission_dpad_armed{};
+    bool mission_stick_was_centered{};
 };
 
 struct NativeGameplayCommandUpdate final {
     bool weapon_next_tap{};
     std::int32_t mission_key_tap{};
+    bool mission_selector_active{};
 };
 
 struct PezBotAutofillFrame final {
@@ -49,6 +51,12 @@ inline constexpr std::int32_t kMissionDpadUpKey = '5';
 inline constexpr std::int32_t kMissionDpadDownKey = 'n';
 inline constexpr std::int32_t kMissionDpadLeftKey = '6';
 inline constexpr std::int32_t kMissionDpadRightKey = '7';
+
+// Proven retail binding: keyboard 6 invokes +actionslot 4. Prefer that
+// high-level command transaction for the VR selector, so a user's rebind of
+// keyboard 6 cannot disconnect the controller from mission support.
+[[nodiscard]] std::string_view campaign_support_selection_command(
+    std::int32_t mission_key) noexcept;
 
 // Converts controller state into one-shot high-level engine commands. A held
 // button or deflected modifier stick is baselined whenever gameplay gains

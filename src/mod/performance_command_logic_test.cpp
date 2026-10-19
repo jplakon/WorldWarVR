@@ -21,7 +21,11 @@ void exact_allowlist() {
     constexpr std::array names{
         "baseline", "fxdraw0", "fxdraw1", "distortion0", "distortion1",
         "dlight1", "dlight4", "zfeather0", "zfeather1", "load_oki3",
-        "toggleconsole", "console_close"};
+        "toggleconsole", "console_close", "test_load_nacht", "test_load_mak",
+        "test_load_pel1", "test_load_ber1", "test_load_sniper", "test_load_ber3", "test_colt", "test_garand",
+        "test_carbine", "test_thompson", "test_type100", "test_bar",
+        "test_springfield", "test_mosin", "test_svt", "test_ppsh",
+        "test_kar98k", "test_ammo", "test_observe_safely"};
     for (const auto* const name : names) {
         const auto request = parse_performance_command_request(std::string("42 ") + name);
         require(request.valid() && request.nonce == 42, "every exact allowlisted id parses");
@@ -35,6 +39,12 @@ void exact_allowlist() {
         "baseline restores only the four agreed rendering variables");
     require(performance_command_native_text(PerformanceCommandId::load_oki3, false) ==
         "loadgame oki3-perf.svg\n", "checkpoint path is fixed, not caller controlled");
+    require(performance_command_native_text(PerformanceCommandId::test_load_sniper, false) ==
+        "devmap sniper\n", "Vendetta is a fixed simulator fixture, not arbitrary command text");
+    require(performance_command_native_text(PerformanceCommandId::test_load_ber3, false) ==
+        "devmap ber3\n", "Accepted SVT mission is a fixed simulator fixture");
+    require(performance_command_native_text(PerformanceCommandId::test_mosin, false) ==
+        "take all\ngive mosin_rifle\n", "Mosin fixture uses the observed registered unscoped weapon name");
     require(parse_performance_command_request("9 fxdraw0\n").valid() &&
         parse_performance_command_request("9 fxdraw0\r\n").valid(), "LF and CRLF accepted");
 }

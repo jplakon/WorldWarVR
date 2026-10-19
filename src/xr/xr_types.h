@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include "sight_pixel_capture_logic.hpp"
 
 struct ID3D11RenderTargetView;
 struct ID3D11ShaderResourceView;
@@ -118,6 +119,17 @@ enum class Hand : std::uint8_t
     Right = 1,
 };
 
+// Display-only hint identity. A known profile is published only while the
+// runtime's bound primary/secondary source pair matches our suggested pair.
+// Unknown/remapped controllers retain semantic action names; input routing
+// never consumes this value.
+enum class ControllerBindingProfile : std::uint8_t
+{
+    generic,
+    touch,
+    index,
+};
+
 struct HandActionState
 {
     TrackedPose grip = {};
@@ -130,6 +142,7 @@ struct HandActionState
     BoolActionState secondary = {};
     BoolActionState stick_click = {};
     BoolActionState thumbrest = {};
+    ControllerBindingProfile binding_profile = ControllerBindingProfile::generic;
 };
 
 struct ActionSnapshot
@@ -268,6 +281,9 @@ struct StereoSourceLayout
     bool preserve_source_aspect = false;
     PhysicalScopeComposition physical_scope = {};
     WorldAimMarkerComposition world_aim_marker = {};
+    // Internal diagnostic metadata only; never submitted through a native or
+    // OpenXR ABI. The broker carries it with the matching captured pixels.
+    SightPixelCaptureRequest sight_pixel_capture = {};
 };
 
 } // namespace wawvr::xr

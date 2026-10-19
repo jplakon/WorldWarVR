@@ -4,6 +4,29 @@ All notable public changes to World War VR are recorded here.
 
 The project follows semantic versioning where practical. Versions with an `alpha`, `beta`, or release-candidate suffix are pre-release builds and can still change incompatibly.
 
+## v0.4.0-beta.6
+
+Controls and aiming update, retaining the previous foliage improvements.
+
+- Disabled right-stick-click melee by default while retaining deliberate
+  physical attacks and the explicit advanced button-binding opt-in.
+- Refined sprint activation, manual reload sequencing, support regrips and
+  weapon handling; added targeted controller-aware guidance and lower help.
+- Corrected exact Garand/unscoped-Mosin sight profiles and the starting Nacht
+  Colt's direction using its actual triangle-backed front/rear sight geometry,
+  with the authored slide bind correctly inverted and current evaluated bone
+  required. No global aiming offset or muzzle-origin change is used.
+- Preserved the Colt's shared surface components, and verified controller-only
+  support selection and objective progression in Little Resistance.
+
+The native build passed 102 CTests. The scoped Colt correction passed actual
+native discharge/initial-hit checks in OpenXR Tester, including off-headset aim
+and a genuine two-hand mode, followed by a successful local headset test.
+Static rested multi-range zero and all weapon/controller variants are not
+certified. Experimental practical enemy-grenade throwback remains disabled.
+The managed launcher retains beta.5 implementation behavior with updated
+version/source metadata, including its existing regional-validation limitation.
+
 ## v0.4.0-beta.5
 
 Foliage visibility and reload interaction update.

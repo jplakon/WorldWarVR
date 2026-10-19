@@ -1,10 +1,10 @@
-World War VR v0.4.0-beta.5 source reference
+World War VR v0.4.0-beta.6 source reference
 
-Public source/tag: https://github.com/jplakon/WorldWarVR/tree/v0.4.0-beta.5
-Public release: https://github.com/jplakon/WorldWarVR/releases/tag/v0.4.0-beta.5
+Public source/tag: https://github.com/jplakon/WorldWarVR/tree/v0.4.0-beta.6
+Public release: https://github.com/jplakon/WorldWarVR/releases/tag/v0.4.0-beta.6
 Pinned OpenXR source commit: 64f2b37c8c6da3d83c9b4d11865ba1fb752cb8ec
 
-The complete corresponding source is supplied as WorldWarVR-v0.4.0-beta.5-Source.zip
+The complete corresponding source is supplied as WorldWarVR-v0.4.0-beta.6-Source.zip
 beside the portable binary. It includes the pinned OpenXR submodule contents,
 which GitHub's automatic source archives do not include.
 
@@ -12,10 +12,11 @@ The release Source ZIP replaces this reference with a generated SOURCE-SNAPSHOT.
 listing the release commit and SHA-256 hashes of the included source files.
 The manifest excludes itself to avoid a circular hash dependency.
 
-Component mapping: root native src/ matches the retained tested beta.5 DLL;
-root launcher-ui/ retains beta.4 logic with beta.5 metadata. Complete original
-sources for the unchanged native helper, including its original native inputs
-and pinned dependencies, are supplied under component-source/beta4.
+Component mapping: root native src/ and launcher/ contain the reviewed
+source32-based Colt01 source for the retained tested beta.6 native DLL/helper.
+Root launcher-ui/ retains beta.5 behavior with beta.6 source/version metadata.
+See release/COMPONENT-SOURCE-beta6.md and release/NATIVE-SOURCE-SHA256.txt.
+Historical component-source/beta4 sources and notices remain preserved.
 
 Read CHANGELOG.md and KNOWN-ISSUES.md for actual test scope and remaining issues.
 No game files, saves, credentials, customer diagnostics, or Git metadata are included.

@@ -8,6 +8,8 @@
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
+#include <span>
 #include <string_view>
 
 namespace wawvr::mod {
@@ -80,7 +82,37 @@ struct SprintLatchState final {
     bool click_was_held{};
     bool latched{};
     std::uint64_t last_action_sequence{};
+    std::uint64_t pending_until_milliseconds{};
+    std::uint64_t neutral_since_milliseconds{};
 };
+
+inline constexpr std::uint64_t kSprintClickPreMovementMilliseconds = 400;
+inline constexpr std::uint64_t kSprintNeutralGraceMilliseconds = 100;
+
+inline constexpr wchar_t kRightStickMeleeEnvironmentVariable[] =
+    L"WAWVR_RIGHT_STICK_MELEE";
+
+// Stick-click melee is an explicit accessibility option, never a default or
+// fallback. Each ownership epoch must observe a release before a click can
+// attack. A held click cannot repeat or replay after UI/tracking/reload loss.
+struct RightStickMeleeState final {
+    bool input_was_owned{};
+    bool armed{};
+    std::uint64_t last_action_sequence{};
+};
+
+[[nodiscard]] bool right_stick_melee_from_setting(
+    std::wstring_view value) noexcept;
+
+[[nodiscard]] bool update_right_stick_melee(
+    bool enabled,
+    bool input_owned,
+    bool interaction_reserved,
+    std::uint64_t action_sequence,
+    const wawvr::xr::BoolActionState& stick_click,
+    RightStickMeleeState* state) noexcept;
+
+void reset_right_stick_melee(RightStickMeleeState* state) noexcept;
 
 inline constexpr std::uint64_t kPhysicalMeleeMinimumSampleMilliseconds = 8;
 inline constexpr std::uint64_t kPhysicalMeleeMaximumSampleMilliseconds = 150;
@@ -148,9 +180,64 @@ struct PhysicalMeleeState final {
     std::uint64_t action_sequence,
     const wawvr::xr::Vec2ActionState& movement_stick,
     const wawvr::xr::BoolActionState& stick_click,
-    SprintLatchState* state) noexcept;
+    SprintLatchState* state,
+    std::uint64_t now_milliseconds = 0) noexcept;
 
 void reset_sprint_latch(SprintLatchState* state) noexcept;
+
+// Adds only a requested sprint bit and resolves the automatic support-ADS
+// conflict. Never writes player stamina, stance, native movement state or ADS
+// that was already present before VR injection.
+[[nodiscard]] bool apply_controller_sprint_request(
+    wawvr::t4::UsercmdSp& command, bool requested,
+    bool native_ads_before_vr) noexcept;
+[[nodiscard]] bool apply_controller_sprint_request(
+    wawvr::t4::UsercmdMp& command, bool requested,
+    bool native_ads_before_vr) noexcept;
+
+struct RefdefMotionTelemetryState final {
+    bool initialized{};
+    wawvr::xr::Vec3f previous_origin{};
+    std::uint64_t previous_milliseconds{};
+};
+
+struct RefdefMotionTelemetry final {
+    bool valid{};
+    float horizontal_distance_units{};
+    float horizontal_speed_units_per_second{};
+    std::uint64_t elapsed_milliseconds{};
+};
+
+// Observational only: this is the validated rendered native camera/refdef
+// origin, NOT playerState.velocity or an engine sprint flag. Keep the HMD
+// fixed for walk/sprint comparisons; head motion and scripted cameras can
+// contaminate this source. Never infer eligibility or write native state.
+[[nodiscard]] RefdefMotionTelemetry sample_refdef_motion_telemetry(
+    bool gameplay_owned, const wawvr::xr::Vec3f& origin,
+    std::uint64_t now_milliseconds,
+    RefdefMotionTelemetryState* state) noexcept;
+
+inline constexpr std::size_t kNativeSpSprintObservationSpan = 0x894;
+struct NativeSpSprintObservation final {
+    bool valid{};
+    std::int32_t command_time{};
+    std::uint32_t pm_flags{};
+    wawvr::xr::Vec3f origin{};
+    wawvr::xr::Vec3f velocity{};
+    float horizontal_speed_units_per_second{};
+    std::int32_t button_up_required{};
+    std::int32_t delay{};
+    std::int32_t last_start{};
+    std::int32_t last_end{};
+    std::int32_t start_max_length{};
+};
+
+// Exact SP native playerState netfield descriptors establish these offsets.
+// The caller additionally verifies those immutable descriptors in the mapped
+// exact profile before copying a readable gclient prefix. No sprint mask is
+// inferred and no native state is ever mutated.
+[[nodiscard]] NativeSpSprintObservation decode_native_sp_sprint_observation(
+    std::span<const std::byte> player_state) noexcept;
 
 // Detects one deliberate fast right-hand swing relative to the HMD, or a
 // rigid forward rifle thrust while both weapon grips are held. Motion is
@@ -168,7 +255,7 @@ void reset_sprint_latch(SprintLatchState* state) noexcept;
 // that hand keeps its grip. Entry/exit establishes a fresh motion baseline;
 // its bounded sliding history makes detection independent of idle-window phase.
 // The caller must withhold this permission during reload interactions.
-// Right-stick click remains an independent fallback.
+// The optional right-stick click binding is independent and disabled by default.
 [[nodiscard]] PhysicalMeleeGesture update_physical_melee_gesture(
     bool input_owned,
     const ControllerFrameSnapshot& snapshot,
@@ -319,16 +406,20 @@ void suppress_t4_melee_charge(wawvr::t4::UsercmdSp& command) noexcept;
 
 // Applies only independently verified T4 usercmd fields. Native keyboard and
 // mouse values are preserved: buttons are ORed and movement is saturating-add.
+// No stick-click melee is read implicitly. The hook may supply a single pulse
+// only after update_right_stick_melee validates the explicit opt-in and rearm.
 [[nodiscard]] ControllerInputResult apply_controller_input(
     wawvr::t4::UsercmdSp& command,
     const ControllerFrameSnapshot& snapshot,
     const wawvr::xr::Basis3f& camera_axis,
-    std::uint64_t now_milliseconds) noexcept;
+    std::uint64_t now_milliseconds,
+    bool right_stick_melee_pressed = false) noexcept;
 
 [[nodiscard]] ControllerInputResult apply_controller_input(
     wawvr::t4::UsercmdMp& command,
     const ControllerFrameSnapshot& snapshot,
     const wawvr::xr::Basis3f& camera_axis,
-    std::uint64_t now_milliseconds) noexcept;
+    std::uint64_t now_milliseconds,
+    bool right_stick_melee_pressed = false) noexcept;
 
 }  // namespace wawvr::mod

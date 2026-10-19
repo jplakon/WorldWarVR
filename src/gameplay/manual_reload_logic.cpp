@@ -153,6 +153,20 @@ ReloadOutput update_manual_reload(
                 event = ReloadEvent::FeedDeviceDropped;
                 break;
             }
+            // The render/input consumer may first observe well contact in the
+            // same sample as the player's deliberate release. Requiring an
+            // additional held NearInsertionPoint frame loses that real edge
+            // and turns an otherwise valid quick insertion into a dropped
+            // magazine. Only a device already owned by this transaction, a
+            // current pose, a proven release edge and exact well contact may
+            // take this route; an untracked or off-well release still drops.
+            if (profile.commit_on_grip_release &&
+                input.hand_in_insertion_zone && input.grip_released_edge) {
+                state->stage = ReloadStage::Committing;
+                event = ReloadEvent::CommitRequested;
+                request_commit = true;
+                break;
+            }
             if (input.hand_in_insertion_zone && input.grip_held) {
                 state->stage = ReloadStage::NearInsertionPoint;
                 event = ReloadEvent::InsertionAssistStarted;

@@ -20,6 +20,7 @@
 #include "aircraft_control_runtime.hpp"
 #include "t4_presentation_state.hpp"
 #include "weapon_hook.hpp"
+#include "sight_audit.hpp"
 #endif
 
 #include <windows.h>
@@ -1128,6 +1129,15 @@ void __cdecl stereo_scene_thunk(void* const refdef, const int scene_flags) noexc
                     PerformanceTimingPhase::stereo_frontend_view);
                 original(refdef, scene_flags);
             }
+#if defined(WAWVR_HAS_T4_BINDINGS)
+            if (profile==&kSpSceneProfile) {
+                observe_rendered_sight_audit_after_scene(stereo.frame_id,static_cast<std::uint32_t>(view_index));
+                if (!stereo.scope_active)
+                    observe_sight_pixel_after_scene(stereo.frame_id,static_cast<std::uint32_t>(view_index),
+                        render_views[view_index],static_cast<std::uint32_t>(stock.width),
+                        static_cast<std::uint32_t>(stock.height),&stereo.compositor_layout);
+            }
+#endif
             if (scope_pass) {
                 const auto after_visibility = report_visibility
                     ? visibility_counts(scope_visibility_banks[0])

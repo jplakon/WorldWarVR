@@ -674,6 +674,8 @@ struct D3D11Compositor::Impl
     std::wstring orientation_diagnostics_directory;
     std::uint32_t orientation_diagnostics_mode_frames[2] = {};
     bool orientation_diagnostics_mode_attempted[2] = {};
+    bool sight_pixel_diagnostics_enabled = false;
+    SightPixelCaptureState sight_pixel_capture_state{};
 
     void Log(const LogLevel level, const char* format, ...) const
     {
@@ -725,15 +727,42 @@ struct D3D11Compositor::Impl
         }
         orientation_diagnostics_directory = absolute;
         orientation_diagnostics_enabled = true;
+        const auto diagnostic_requested=[](const wchar_t* name) {
+            wchar_t value[2]{};
+            return GetEnvironmentVariableW(name,value,2)==1&&value[0]==L'1';
+        };
+        sight_pixel_diagnostics_enabled=diagnostic_requested(L"WAWVR_SIGHT_PIXEL_DIAGNOSTICS")&&
+            diagnostic_requested(L"WAWVR_SIGHT_DIAGNOSTICS")&&
+            diagnostic_requested(L"WAWVR_SERVER_IMPACT_DIAGNOSTICS")&&
+            diagnostic_requested(L"WAWVR_GAMEPLAY_DIAGNOSTICS");
+        if (sight_pixel_diagnostics_enabled) {
+            Log(LogLevel::Info,
+                "OrientationDiag sight-pixel mode: capture only an exact tagged source frame, "
+                "at most once each for Garand/Mosin/SVT; no timed sampling or in-game overlay");
+            return;
+        }
         Log(LogLevel::Info,
             "OrientationDiag enabled: one source/left/right top-down BMP after "
             "30 mono and 360 stereo compositor frames; directory=%ls",
             absolute);
     }
 
-    const char* BeginOrientationCapture(const StereoSourceLayout& layout)
+    const char* BeginOrientationCapture(const StereoSourceLayout& layout,const std::uint64_t source_frame,
+        const std::uint32_t source_width,const std::uint32_t source_height)
     {
         if (!orientation_diagnostics_enabled) return nullptr;
+        if (sight_pixel_diagnostics_enabled) {
+            if (layout.preserve_source_aspect||layout.physical_scope.active) return nullptr;
+            const auto asset=consume_sight_pixel_capture_request(layout.sight_pixel_capture,
+                source_frame,source_width,source_height,true,&sight_pixel_capture_state);
+            switch(asset) {
+            case 1:return "sight-garand";
+            case 2:return "sight-mosin";
+            case 3:return "sight-svt";
+            case 4:return "sight-colt";
+            default:return nullptr;
+            }
+        }
         const unsigned mode = layout.preserve_source_aspect ? 0u : 1u;
         if (orientation_diagnostics_mode_attempted[mode]) return nullptr;
         const std::uint32_t wait_frames = mode == 0 ? 30u : 360u;
@@ -1342,7 +1371,8 @@ bool D3D11Compositor::RenderStereo(
 
     D3D11_TEXTURE2D_DESC source_description = {};
     source.texture->GetDesc(&source_description);
-    const char* const orientation_capture_mode = impl_->BeginOrientationCapture(layout);
+    const char* const orientation_capture_mode = impl_->BeginOrientationCapture(layout,frame.frame_id,
+        source_description.Width,source_description.Height);
     if (orientation_capture_mode != nullptr) {
         impl_->Log(LogLevel::Info,
             "OrientationDiag capture begin mode=%s frame=%llu timing_frame=%llu "
@@ -1351,6 +1381,15 @@ bool D3D11Compositor::RenderStereo(
             static_cast<unsigned long long>(runtime.timing_frame_id()),
             static_cast<unsigned long long>(source.serial), source.rendered_views_valid,
             source.width, source.height);
+        if (impl_->sight_pixel_diagnostics_enabled) {
+            impl_->Log(LogLevel::Info,
+                "OrientationDiag sight-pixel source frame=%llu serial=%llu poseSerial=%llu asset=%u "
+                "untouchedPixels=1 projectionPredictionOnly=1 pixelAgreementNotClaimed=1",
+                static_cast<unsigned long long>(frame.frame_id),
+                static_cast<unsigned long long>(source.serial),
+                static_cast<unsigned long long>(layout.sight_pixel_capture.pose_serial),
+                layout.sight_pixel_capture.asset);
+        }
         impl_->CaptureOrientationTexture(source.texture, orientation_capture_mode,
             "source", frame.frame_id, source.serial);
     }

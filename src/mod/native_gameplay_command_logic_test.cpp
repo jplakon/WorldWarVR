@@ -334,6 +334,55 @@ void test_mission_chord_requires_exact_single_player_profile() {
            "MP keeps ordinary weapon-next release behavior");
 }
 
+void test_same_sample_support_chord_after_neutral() {
+    using namespace wawvr::mod;
+    NativeGameplayCommandState state{};
+    expect(campaign_support_selection_command(kMissionDpadLeftKey) ==
+               "+actionslot 4\n-actionslot 4\n" &&
+               campaign_support_selection_command(kMissionDpadRightKey).empty() &&
+               campaign_support_selection_command(0).empty(),
+           "support invokes the proven native action slot without guessing unrelated commands");
+    static_cast<void>(update_native_gameplay_commands({
+        .input_owned = true, .single_player_profile = true,
+        .mission_stick_valid = true}, &state));
+    auto update = update_native_gameplay_commands({
+        .input_owned = true, .single_player_profile = true,
+        .weapon_next_held = true, .mission_stick_valid = true,
+        .mission_stick_x = -1.0F}, &state);
+    expect(update.mission_key_tap == kMissionDpadLeftKey &&
+               !update.weapon_next_tap && update.mission_selector_active,
+           "Y and left in one sample use the immediately prior centre and select radio");
+    for (int sample = 0; sample < 10'000; ++sample) {
+        update = update_native_gameplay_commands({
+            .input_owned = true, .single_player_profile = true,
+            .weapon_next_held = true, .mission_stick_valid = true,
+            .mission_stick_x = -1.0F}, &state);
+        expect(update.mission_key_tap == 0 && !update.weapon_next_tap &&
+                   update.mission_selector_active,
+               "holding the selected support direction neither repeats nor cycles weapons");
+    }
+    update = update_native_gameplay_commands({
+        .input_owned = true, .single_player_profile = true,
+        .mission_stick_valid = true}, &state);
+    expect(!update.weapon_next_tap && update.mission_key_tap == 0 &&
+               !update.mission_selector_active,
+           "support release leaves radio selected and returns movement ownership");
+
+    NativeGameplayCommandState recovered{};
+    static_cast<void>(update_native_gameplay_commands({
+        .input_owned = true, .single_player_profile = true,
+        .mission_stick_valid = true}, &recovered));
+    static_cast<void>(update_native_gameplay_commands({
+        .input_owned = false, .single_player_profile = true,
+        .mission_stick_valid = true}, &recovered));
+    update = update_native_gameplay_commands({
+        .input_owned = true, .single_player_profile = true,
+        .weapon_next_held = true, .mission_stick_valid = true,
+        .mission_stick_x = -1.0F}, &recovered);
+    expect(update.mission_key_tap == 0 && !update.mission_selector_active,
+           "neutral before focus loss cannot arm a chord across ownership epochs");
+}
+
 void test_pezbot_autofill_runs_once_per_frontend_visit() {
     using namespace wawvr::mod;
     PezBotAutofillState state{};
@@ -472,6 +521,7 @@ int main() {
     test_walking_weapon_next_does_not_trigger_mission_dpad();
     test_weapon_next_mission_chord_suppresses_release();
     test_mission_chord_requires_exact_single_player_profile();
+    test_same_sample_support_chord_after_neutral();
     test_pezbot_autofill_runs_once_per_frontend_visit();
     test_pezbot_autofill_handles_connected_map_changes();
     test_pezbot_autofill_is_mp_and_launcher_gated();

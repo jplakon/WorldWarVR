@@ -83,6 +83,9 @@ std::array<std::uint8_t, kNativeMouseGateCallSize>
 std::array<std::uint8_t, kNativeMouseGateCallSize>
     g_native_mouse_gate_replacement_call{};
 std::atomic<bool> g_single_player_profile{false};
+std::atomic<bool> g_campaign_selector_active{false};
+std::atomic<std::uint64_t> g_campaign_selector_sequence{0};
+std::atomic<std::uint64_t> g_campaign_selector_sample_milliseconds{0};
 std::atomic<bool> g_multiplayer_profile{false};
 std::atomic<bool> g_campaign_unlock_queued{false};
 std::atomic<bool> g_pezbot_autofill_enabled{false};
@@ -1820,6 +1823,9 @@ bool bind_t4_menu_input(
 }
 
 void clear_t4_menu_input() noexcept {
+    g_campaign_selector_active.store(false, std::memory_order_release);
+    g_campaign_selector_sequence.store(0, std::memory_order_release);
+    g_campaign_selector_sample_milliseconds.store(0, std::memory_order_release);
     clear_performance_command_service();
     g_simulator_weapon.store(
         SimulatorBoltActionWeapon::None, std::memory_order_release);
@@ -1875,6 +1881,21 @@ void clear_t4_menu_input() noexcept {
     g_headset_m1garand_gl_selection_exhausted_logged.store(
         false, std::memory_order_relaxed);
     g_pezbot_autofill_state = {};
+}
+
+bool campaign_support_selector_consumes_movement(
+    const std::uint64_t action_sequence) noexcept {
+    return action_sequence != 0 &&
+        g_campaign_selector_sequence.load(std::memory_order_acquire) == action_sequence &&
+        campaign_support_selector_active();
+}
+
+bool campaign_support_selector_active() noexcept {
+    const auto sampled = g_campaign_selector_sample_milliseconds.load(std::memory_order_acquire);
+    const auto now = GetTickCount64();
+    return sampled != 0 && now >= sampled &&
+        now - sampled <= kMaximumControllerFrameAgeMilliseconds &&
+        g_campaign_selector_active.load(std::memory_order_acquire);
 }
 
 T4MenuInputServiceResult service_t4_menu_input_after_com_frame(
@@ -2445,6 +2466,10 @@ T4MenuInputServiceResult service_t4_menu_input_after_com_frame(
                 .mission_stick_y = left.stick.current.y,
             },
             &state->native_commands);
+    g_campaign_selector_active.store(native_commands.mission_selector_active,
+                                     std::memory_order_release);
+    g_campaign_selector_sequence.store(frame.actions.sequence, std::memory_order_release);
+    g_campaign_selector_sample_milliseconds.store(now_milliseconds, std::memory_order_release);
     const DirectionalActionState directional_state_before =
         state->directional_actions;
     const DirectionalActionUpdate directional_action =
@@ -2500,13 +2525,24 @@ T4MenuInputServiceResult service_t4_menu_input_after_com_frame(
         }
     }
     if (native_commands.mission_key_tap != 0) {
-        send_key_tap(
-            key_event, native_commands.mission_key_tap, now_milliseconds);
+        const auto support_command = campaign_support_selection_command(
+            native_commands.mission_key_tap);
+        const bool native_support_command_queued = !support_command.empty() &&
+            queue_console_command(cbuf_add_text, support_command.data());
+        if (!native_support_command_queued) {
+            // Preserve the independently validated key route if the optional
+            // command-buffer capability is unavailable. Other mission slots
+            // retain their established bindings rather than guessed commands.
+            send_key_tap(key_event, native_commands.mission_key_tap, now_milliseconds);
+        }
         result.mission_key_tapped = native_commands.mission_key_tap;
         if (native_commands.mission_key_tap == kMissionDpadLeftKey) {
-            WAWVR_STEREO_DIAG_ONCE(
-                "CampaignDiag rocket-barrage selection emitted: nativeKey=%d modifier=left-secondary exactSpProfile=1",
-                native_commands.mission_key_tap);
+            stereo_diagnostic_log(
+                "CampaignDiag rocket-barrage selection emitted: nativeKey=%d modifier=left-secondary exactSpProfile=1 sequence=%llu weaponNextTap=%d nativeRoute=%s; objective progression requires native mission confirmation",
+                native_commands.mission_key_tap,
+                static_cast<unsigned long long>(frame.actions.sequence),
+                native_commands.weapon_next_tap ? 1 : 0,
+                native_support_command_queued ? "Cbuf_actionslot4" : "CL_KeyEvent_fallback");
         }
     }
     const MenuCursorRegion current_cursor_region = cursor_region(

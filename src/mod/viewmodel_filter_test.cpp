@@ -232,6 +232,49 @@ void test_weapon_bone_range_is_not_hidden() {
         "reapplying the same mask is idempotent");
 }
 
+void test_all_weapon_bones_and_native_component_states_are_preserved() {
+    // Exhaust all legal hand/weapon partitions, including every word
+    // boundary. Render state may arrive once per eye: the second call must
+    // neither add a gun hide bit nor restore an intentionally detached part.
+    for (std::uint16_t hand_count = 1; hand_count < 128; ++hand_count) {
+        for (std::uint16_t weapon_count = 1;
+             weapon_count <= 128 - hand_count; ++weapon_count) {
+            ViewmodelFixture fixture(static_cast<std::uint8_t>(hand_count),
+                static_cast<std::uint8_t>(weapon_count),
+                static_cast<std::uint8_t>(hand_count + weapon_count));
+            std::array<std::uint32_t,kT4DObjPartBitWordCount> native{};
+            for (std::uint16_t bone=hand_count;
+                 bone<hand_count+weapon_count; ++bone) {
+                if ((bone % 3) == 0)
+                    native[bone >> 5U] |= 0x80000000U >> (bone & 31U);
+            }
+            fixture.set_hide_bits(native);
+            check_status(fixture.apply(),ViewmodelFilterStatus::applied,
+                "first-eye hand filtering succeeds for every legal partition");
+            const auto first_eye = fixture.hide_bits();
+            check_status(fixture.apply(),ViewmodelFilterStatus::already_hidden,
+                "second eye sees the identical idempotent hand filter");
+            check(fixture.hide_bits()==first_eye,
+                "both eyes retain the same component visibility");
+            for (std::uint16_t bone=hand_count; bone<128; ++bone) {
+                const auto mask=0x80000000U >> (bone & 31U);
+                check((first_eye[bone >> 5U]&mask)==(native[bone >> 5U]&mask),
+                    "gun component and unused-tail bits remain exactly native");
+            }
+            // Native reload completion restores its own detached-component
+            // bits. Filtering the new native state must not re-hide them.
+            fixture.set_hide_bits({});
+            check_status(fixture.apply(),ViewmodelFilterStatus::applied,
+                "native restored weapon is filtered afresh after reload");
+            for (std::uint16_t bone=hand_count;
+                 bone<hand_count+weapon_count; ++bone)
+                check((fixture.hide_bits()[bone >> 5U]&
+                    (0x80000000U >> (bone & 31U)))==0,
+                    "reload restoration is never overwritten for a gun bone");
+        }
+    }
+}
+
 void test_invalid_memory_and_layouts_fail_closed() {
     check_status(
         hide_t4_viewmodel_hand_surfaces(nullptr, &validate_test_range),
@@ -347,6 +390,75 @@ void test_invalid_memory_and_layouts_fail_closed() {
     }
 }
 
+void test_component_visibility_survives_repeated_reload_and_model_switch() {
+    // Exercise additional attachment models as well as the first weapon.
+    // The filter owns only the leading hands; every later component and tail
+    // bit must remain exactly native across repeated independent eye passes.
+    for (const auto hand_count : std::array<std::uint8_t, 4>{12, 33, 70, 105}) {
+        constexpr std::uint8_t weapon_count = 11;
+        constexpr std::uint8_t accessory_count = 8;
+        ViewmodelFixture fixture(hand_count, weapon_count,
+            static_cast<std::uint8_t>(hand_count + weapon_count + accessory_count));
+        std::array<std::byte, kT4XModelNumBonesOffset + 1> alternate_weapon{};
+        alternate_weapon[kT4XModelNumBonesOffset] = std::byte{weapon_count};
+        std::array<void*, 4> models{};
+        std::uint32_t random = 0xC0FFEE01U;
+        for (unsigned frame = 0; frame < 1'024; ++frame) {
+            models = {fixture.hand_model.data(),
+                (frame & 1U) ? alternate_weapon.data() : fixture.weapon_model.data(),
+                fixture.weapon_model.data(), alternate_weapon.data()};
+            fixture.set_model_count(static_cast<std::uint8_t>(models.size()));
+            fixture.set_model_table(models.data());
+            fixture.authorize();
+            allow_range(models.data(), sizeof(models));
+            allow_range(alternate_weapon.data(), alternate_weapon.size());
+            std::array<std::uint32_t, kT4DObjPartBitWordCount> native{};
+            for (auto& word : native) {
+                random = random * 1'664'525U + 1'013'904'223U;
+                word = random;
+            }
+            // A native detached-magazine bit toggles during reload. Its
+            // restoration is just as important as preserving it when hidden.
+            const auto magazine_bone = static_cast<unsigned>(hand_count) + 1U;
+            const auto magazine_mask = 0x80000000U >> (magazine_bone & 31U);
+            if (frame % 4 < 2) native[magazine_bone >> 5U] |= magazine_mask;
+            else native[magazine_bone >> 5U] &= ~magazine_mask;
+            fixture.set_hide_bits(native);
+            const auto before_dobj = fixture.dobj;
+            const auto before_models = models;
+            const auto before_hand = fixture.hand_model;
+            const auto before_weapon = fixture.weapon_model;
+            const auto before_alternate = alternate_weapon;
+            const auto status = fixture.apply();
+            check(status == ViewmodelFilterStatus::applied ||
+                      status == ViewmodelFilterStatus::already_hidden,
+                  "each switched native model state is accepted independently");
+            const auto first_eye = fixture.hide_bits();
+            check_status(fixture.apply(), ViewmodelFilterStatus::already_hidden,
+                         "reversed or repeated eye consumption is idempotent");
+            check(fixture.hide_bits() == first_eye,
+                  "second eye cannot acquire stale component visibility");
+            for (unsigned bone = 0; bone < kT4DObjMaximumBones; ++bone) {
+                const auto mask = 0x80000000U >> (bone & 31U);
+                check((first_eye[bone >> 5U] & mask) ==
+                          (bone < hand_count ? mask : native[bone >> 5U] & mask),
+                      "only hand-owned bits change, including attached models and unused tail");
+            }
+            for (std::size_t offset = 0; offset < fixture.dobj.size(); ++offset) {
+                if (offset >= kT4DObjHidePartBitsOffset &&
+                    offset < kT4DObjHidePartBitsOffset +
+                        kT4DObjPartBitWordCount * sizeof(std::uint32_t)) continue;
+                check(fixture.dobj[offset] == before_dobj[offset],
+                      "filter never modifies model identity, skeleton, or material-related headers");
+            }
+            check(models == before_models && fixture.hand_model == before_hand &&
+                      fixture.weapon_model == before_weapon &&
+                      alternate_weapon == before_alternate,
+                  "filter cannot rewrite any model or component metadata");
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -354,6 +466,8 @@ int main() {
     test_hand_bone_mask_boundaries();
     test_native_hide_bits_are_preserved();
     test_weapon_bone_range_is_not_hidden();
+    test_all_weapon_bones_and_native_component_states_are_preserved();
+    test_component_visibility_survives_repeated_reload_and_model_switch();
     test_invalid_memory_and_layouts_fail_closed();
     return 0;
 }

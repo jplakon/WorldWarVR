@@ -5,6 +5,10 @@
 namespace wawvr::mod {
 
 void stereo_diagnostic_log(const char* format, ...) noexcept;
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_BEGIN
+// Readiness only; it neither initializes nor changes the existing file logger.
+[[nodiscard]] bool stereo_diagnostic_log_ready() noexcept;
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_END
 
 // Writes a diagnostic to WorldWarVR.log only on the first visit to a
 // particular call site. Stereo rejection paths run once per rendered frame,

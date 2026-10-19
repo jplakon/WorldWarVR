@@ -73,6 +73,27 @@ namespace wawvr::launcher
         constexpr std::uintmax_t kMaximumLocalizationSelectorBytes = 64 * 1'024;
         constexpr std::string_view kUiDedicatedDisabledLine =
             "seta ui_dedicated \"0\"";
+        // Only verified non-cheat, non-latched policy lives here (SP native
+        // registrations and live flags snapshot, 2026-10-16). Protected bob,
+        // alpha/names, tracer and melee dvars stay in early +set. File-system
+        // roots and renderer/threading/shadow policy remain early too.
+        // Keep the filename below MAX_QPATH; its suffix is the first 96 bits
+        // of this exact text's SHA-256. Reuse requires full byte equality.
+        constexpr auto kLaunchPolicyConfigFilename =
+            L"wawvr_policy_BF0549748691B2B7EBFD6F9C.cfg";
+        constexpr std::string_view kLaunchPolicyConfigText =
+            "// WorldWarVR private launch policy v1 - generated, do not edit\n"
+            "set com_introPlayed 1\n"
+            "set com_maxfps 0\n"
+            "set cg_bobWeaponAmplitude 0\n"
+            "set cg_drawCrosshair 0\n"
+            "set cg_drawTurretCrosshair 0\n"
+            "set fx_cull_elem_spawn 1\n"
+            "set fx_cull_elem_draw 0\n";
+        constexpr auto kMpLaunchPolicyConfigFilename =
+            L"wawvr_policy_9049D2306710F7D989C8183A.cfg";
+        constexpr auto kMpBotLaunchPolicyConfigFilename =
+            L"wawvr_policy_FCB099C61133BA70F154DFE8.cfg";
         constexpr auto kPezBotReceiptFilename =
             L".wawvr-pezbot-005p.receipt";
         constexpr auto kExpectedPezBotImportHelperSha256 =
@@ -5305,57 +5326,47 @@ namespace wawvr::launcher
 
     std::wstring build_game_command_line(const LaunchPlan& plan)
     {
+        for (const auto& path : {plan.staged_exe,plan.game_dir,plan.home_dir})
+        {
+            // T4's native splitter does not honor quotes around '+' or LF.
+            // Windows argument quoting alone cannot make these paths safe.
+            if (path.wstring().find_first_of(L"+\r\n") != std::wstring::npos)
+                throw std::invalid_argument(
+                    "World at War startup paths cannot contain '+' or line breaks");
+        }
         std::wstring command_line = quote_windows_argument(plan.staged_exe.wstring()) +
             L" +set fs_basepath " + quote_windows_argument(plan.game_dir.wstring()) +
             L" +set fs_homepath " + quote_windows_argument(plan.home_dir.wstring());
 
-        if (plan.executable_kind == ExecutableKind::mp)
+        if (plan.executable_kind == ExecutableKind::mp ||
+            !plan.home_dir_is_launcher_managed)
         {
             // T4 MP resolves mod fastfiles through fs_localAppData even when
-            // fs_homepath already finds the mod's IWD. Point both roots at the
-            // same isolated MP home so mod.ff and PeZBOTWaW.iwd load together.
+            // fs_homepath already finds the mod's IWD. T4 SP also uses this
+            // root for profile writes, independently of fs_homepath and the
+            // LOCALAPPDATA environment variable. Honor an explicit caller-
+            // owned --homepath for both roots so diagnostic sessions cannot
+            // write the ordinary Activision profile. Leave the managed SP
+            // default behavior unchanged in this narrowly scoped correction.
             command_line += L" +set fs_localAppData " +
                 quote_windows_argument(plan.home_dir.wstring());
         }
 
         command_line +=
-            std::wstring(L" +set com_introPlayed 1 +set r_fullscreen 0") +
+            std::wstring(L" +set r_fullscreen 0") +
             L" +set r_customMode " + source_resolution_text(plan.source_resolution) +
             // OpenXR owns presentation cadence. Do not inherit T4's common
             // 85-FPS profile cap or wait for the desktop window's vblank;
             // com_maxfps 0 is T4's registered uncapped value.
-            L" +set com_maxfps 0 +set r_vsync 0"
+            L" +set r_vsync 0"
             L" +set r_aaSamples 1 +set r_dof_enable 0"
-            // Keep stock locomotion and viewmodel bob out of the headset.
-            // Plain `set` makes this a process-local launch policy rather than
-            // persisting zeroed comfort dvars into the isolated profile.
-            L" +set bg_bobMax 0 +set cg_bobWeaponAmplitude 0"
-            // The tracked barrel is the firearm reticle. Keep the stock
-            // head-centred crosshair and name target out of gameplay while
-            // preserving use prompts, grenade warnings, and the rest of HUD.
-            L" +set cg_drawCrosshair 0 +set cg_drawCrosshairNames 0"
-            L" +set cg_drawTurretCrosshair 0"
+            // Protected settings must retain StartupVariable semantics; a
+            // late config is not allowed to bypass native cheat protection.
+            L" +set bg_bobMax 0"
+            L" +set cg_drawCrosshairNames 0"
             L" +set cg_crosshairAlpha 0 +set cg_crosshairAlphaMin 0"
-            // Flat WaW deliberately randomizes first-person tracers. In VR
-            // each shot needs a visible controller-to-impact trajectory, so
-            // request the exact registered local-player dvar at full chance.
             L" +set cg_firstPersonTracerChance 1"
-            // T4 updates its FX camera before the late same-frame stereo eye
-            // transforms. Retain stock element-spawn culling so distant map
-            // effects cannot repeat unchecked into the fixed 1024-effect
-            // pool, but disable
-            // element draw culling so already-spawned HMD-visible effects are
-            // not discarded against the stale stock/body camera.
-            L" +set fx_cull_elem_spawn 1 +set fx_cull_elem_draw 0"
-            // Auto-melee writes a target yaw/distance into the command and
-            // visibly drags the legacy camera. The VR input hook also clears
-            // those serialized fields while the knife button is held.
-            L" +set aim_automelee_enabled 0"
-            // Stock melee expects desktop timing and forces the player much
-            // closer than a comfortable physical VR swing. Preserve the
-            // native knife trace/damage path but extend its registered range
-            // from the stock 64 units to a conservative 96 units.
-            L" +set player_meleeRange 96"
+            L" +set aim_automelee_enabled 0 +set player_meleeRange 96"
             // Stock depth-of-field focus blur is tied to the legacy camera
             // and becomes an uncomfortable full-headset blur during ADS.
             // Disable it for both gameplay and frontend launch targets.
@@ -5390,12 +5401,17 @@ namespace wawvr::launcher
 
         if (plan.executable_kind == ExecutableKind::sp)
         {
+            command_line += L" +exec ";
+            command_line += launch_policy_config_path(plan).filename().wstring();
             // WaW gates Mission Select on the archived mis_01 high-water mark;
             // COD4's mis_cheat flag does not unlock this menu. Apply WaW's
             // stock unlock-all value on every SP launch. The injected runtime
             // repeats it after profile initialization, while leaving saves and
             // the separate mission-difficulty record untouched.
-            command_line += L" +seta mis_01 50";
+            // Swallowed map commands were caused by the native 32-segment
+            // limit, not by seta vs set. Keep this non-archived startup value;
+            // the runtime still archives it after profile initialization.
+            command_line += L" +set mis_01 50";
         }
 
         if (plan.launch_target == LaunchTarget::offline_multiplayer)
@@ -5405,7 +5421,7 @@ namespace wawvr::launcher
             // keeps stats/matchmaking disabled. These defaults do not create a
             // firewall rule and do not attempt any public-server connection.
             command_line +=
-                L" +set onlinegame 0 +set ui_netSource 0"
+                L" +set onlinegame 0"
                 L" +set dedicated 0"
                 L" +set cl_punkbuster 0 +set sv_punkbuster 0";
             if (plan.bot_policy != BotPolicy::disabled &&
@@ -5420,12 +5436,7 @@ namespace wawvr::launcher
                 // frame after an active server exits without visiting state 0.
                 command_line +=
                     L" +set fs_game mods/mp_PeZBOTWAW"
-                    L" +exec pezbot.cfg"
-                    L" +set svr_pezbots 9"
-                    L" +set wawvr_pezbot_autofill 9"
-                    L" +set svr_pezbots_weapons authentic"
-                    L" +set svr_pezbots_useperks 0"
-                    L" +set svr_pezbots_skill 0.7";
+                    L" +exec pezbot.cfg";
             }
             else
             {
@@ -5434,14 +5445,14 @@ namespace wawvr::launcher
                 // degrades to base offline multiplayer rather than loading a
                 // stale or modified bot folder.
                 command_line +=
-                    L" +set fs_game \"\""
-                    L" +set svr_pezbots 0"
-                    L" +set wawvr_pezbot_autofill 0";
+                    L" +set fs_game \"\"";
             }
-            // Keep the UI selector last as command-line defense in depth.
+            // Apply script-owned bot overrides only after pezbot.cfg defaults.
+            // The private config's final command keeps the UI selector last.
             // launch_game also normalizes the archived value in only the
             // isolated active profile immediately before process creation.
-            command_line += L" +set ui_dedicated 0";
+            command_line += L" +exec ";
+            command_line += launch_policy_config_path(plan).filename().wstring();
         }
 
         switch (plan.launch_target)
@@ -5469,7 +5480,49 @@ namespace wawvr::launcher
         case LaunchTarget::offline_multiplayer:
             break;
         }
+        validate_t4_startup_command_budget(command_line);
         return command_line;
+    }
+
+    void validate_t4_startup_command_budget(const std::wstring_view command_line)
+    {
+        const auto commands = static_cast<std::size_t>(
+            std::count(command_line.begin(),command_line.end(),L'+'));
+        if (commands > kMaximumT4StartupCommands ||
+            command_line.find_first_of(L"\r\n") != std::wstring_view::npos)
+            throw std::invalid_argument(
+                "World at War startup exceeds its 31-command native parser budget");
+    }
+
+    std::string_view launch_policy_config_contents(const LaunchPlan& plan)
+    {
+        if (plan.launch_target==LaunchTarget::offline_multiplayer)
+        {
+            // The LAN browser selector is a late UI policy, unlike dedicated
+            // server/network initialization which must stay in early +set.
+            static const std::string multiplayer =
+                std::string(kLaunchPolicyConfigText)+
+                "set ui_netSource 0\nset svr_pezbots 0\n"
+                "set wawvr_pezbot_autofill 0\nset ui_dedicated 0\n";
+            static const std::string bots =
+                std::string(kLaunchPolicyConfigText)+
+                "set ui_netSource 0\nset svr_pezbots 9\n"
+                "set wawvr_pezbot_autofill 9\nset svr_pezbots_weapons authentic\n"
+                "set svr_pezbots_useperks 0\nset svr_pezbots_skill 0.7\n"
+                "set ui_dedicated 0\n";
+            return plan.bot_policy!=BotPolicy::disabled && plan.pezbot_enabled
+                ? bots : multiplayer;
+        }
+        return kLaunchPolicyConfigText;
+    }
+
+    fs::path launch_policy_config_path(const LaunchPlan& plan)
+    {
+        return plan.home_dir / L"main" /
+            (plan.launch_target==LaunchTarget::offline_multiplayer
+                ? (plan.bot_policy!=BotPolicy::disabled && plan.pezbot_enabled
+                    ? kMpBotLaunchPolicyConfigFilename : kMpLaunchPolicyConfigFilename)
+                : kLaunchPolicyConfigFilename);
     }
 
     bool is_same_or_descendant(const fs::path& candidate, const fs::path& parent)
@@ -6844,6 +6897,156 @@ namespace wawvr::launcher
         return report;
     }
 
+    namespace
+    {
+        struct LaunchPolicyLease
+        {
+            std::vector<UniqueHandle> directories;
+            UniqueHandle file;
+        };
+
+        UniqueHandle pin_policy_directory(const fs::path& path)
+        {
+            UniqueHandle handle(CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+            if (!handle.valid()) throw_last_error("Open isolated launch-policy directory");
+            BY_HANDLE_FILE_INFORMATION info{};
+            if (!GetFileInformationByHandle(handle.get(),&info))
+                throw_last_error("Inspect isolated launch-policy directory");
+            if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)==0 ||
+                (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)!=0)
+                throw std::runtime_error(
+                    "Launch-policy ancestors must be ordinary non-reparse directories");
+            return handle;
+        }
+
+        LaunchPolicyLease stage_launch_policy_config(const LaunchPlan& plan)
+        {
+            validate_write_boundaries(plan);
+            const auto expected=launch_policy_config_contents(plan);
+            const auto filename=launch_policy_config_path(plan).filename();
+            const auto home=plan.home_dir.lexically_normal();
+            require_safe_absolute_handoff_path(home,"Launch-policy home");
+            if (home!=plan.home_dir || home==home.root_path())
+                throw std::invalid_argument("Launch-policy home must be a canonical private directory");
+            // Pin every ancestor without delete sharing. Never follow a
+            // pre-existing junction/symlink, and prevent a directory rename
+            // from redirecting the subsequent CREATE_NEW into game data.
+            LaunchPolicyLease lease;
+            auto current=home.root_path();
+            lease.directories.push_back(pin_policy_directory(current));
+            for (const auto& component : home.relative_path())
+            {
+                current/=component;
+                lease.directories.push_back(pin_policy_directory(current));
+            }
+            const auto main=home/L"main";
+            if (!CreateDirectoryW(main.c_str(),nullptr) &&
+                GetLastError()!=ERROR_ALREADY_EXISTS)
+                throw_last_error("Create isolated launch-policy directory");
+            lease.directories.push_back(pin_policy_directory(main));
+            validate_write_boundaries(plan);
+
+            // Do not knowingly allow another loose search-root file to mask
+            // this policy. Verified PeZBOT archives cannot supply this new
+            // reserved basename; a conflicting loose file fails closed.
+            for (const auto& root : {plan.game_dir/L"main",
+                     plan.game_dir/L"mods"/L"mp_PeZBOTWAW",
+                     plan.home_dir/L"mods"/L"mp_PeZBOTWAW",
+                     plan.runtime_dir/L"mods"/L"mp_PeZBOTWAW"})
+            {
+                const auto other=root/filename;
+                const DWORD attributes=GetFileAttributesW(other.c_str());
+                if (attributes!=INVALID_FILE_ATTRIBUTES)
+                    throw std::runtime_error(
+                        "A conflicting launch-policy file exists in another game search root");
+                const auto error=GetLastError();
+                if (error!=ERROR_FILE_NOT_FOUND && error!=ERROR_PATH_NOT_FOUND)
+                    throw_last_error("Inspect launch-policy search-root collision");
+            }
+            const auto path=launch_policy_config_path(plan);
+            bool created=true;
+            lease.file=UniqueHandle(CreateFileW(path.c_str(),GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ,nullptr,CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+            if (!lease.file.valid())
+            {
+                const auto error=GetLastError();
+                if (error!=ERROR_FILE_EXISTS && error!=ERROR_ALREADY_EXISTS)
+                    throw_last_error("Create private launch-policy file");
+                created=false;
+                lease.file=UniqueHandle(CreateFileW(path.c_str(),GENERIC_READ,
+                    FILE_SHARE_READ,nullptr,OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+                if (!lease.file.valid()) throw_last_error("Open private launch-policy file");
+            }
+            BY_HANDLE_FILE_INFORMATION info{};
+            if (!GetFileInformationByHandle(lease.file.get(),&info))
+                throw_last_error("Inspect private launch-policy file");
+            if ((info.dwFileAttributes &
+                    (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))!=0 ||
+                info.nNumberOfLinks!=1)
+                throw std::runtime_error(
+                    "Private launch-policy file must be ordinary, non-reparse and single-link");
+            if (created)
+            {
+                DWORD written{};
+                if (!WriteFile(lease.file.get(),expected.data(),
+                        static_cast<DWORD>(expected.size()),&written,nullptr) ||
+                    written!=expected.size() ||
+                    !FlushFileBuffers(lease.file.get()))
+                    throw_last_error("Write private launch-policy file");
+                // Native FS readers may grant only FILE_SHARE_READ. A still-
+                // writable lease would reject those readers even though it
+                // grants read sharing itself. Close the writer, reopen read-
+                // only under pinned ancestors, then prove the exact file did
+                // not change across the gap before inspecting its bytes.
+                const auto original=info;
+                lease.file=UniqueHandle();
+                lease.file=UniqueHandle(CreateFileW(path.c_str(),GENERIC_READ,
+                    FILE_SHARE_READ,nullptr,OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+                if (!lease.file.valid()) throw_last_error("Pin private launch-policy reader");
+                if (!GetFileInformationByHandle(lease.file.get(),&info))
+                    throw_last_error("Reinspect private launch-policy file");
+                if (info.dwVolumeSerialNumber!=original.dwVolumeSerialNumber ||
+                    info.nFileIndexHigh!=original.nFileIndexHigh ||
+                    info.nFileIndexLow!=original.nFileIndexLow ||
+                    info.nNumberOfLinks!=1 ||
+                    (info.dwFileAttributes &
+                        (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))!=0)
+                    throw std::runtime_error("Private launch-policy identity changed during staging");
+            }
+            LARGE_INTEGER size{},zero{};
+            if (!GetFileSizeEx(lease.file.get(),&size) ||
+                size.QuadPart!=static_cast<LONGLONG>(expected.size()) ||
+                !SetFilePointerEx(lease.file.get(),zero,nullptr,FILE_BEGIN))
+                throw std::runtime_error("Private launch-policy size or read position is invalid");
+            std::vector<char> contents(expected.size());
+            DWORD read{};
+            if (!ReadFile(lease.file.get(),contents.data(),
+                    static_cast<DWORD>(contents.size()),&read,nullptr) ||
+                read!=contents.size() ||
+                std::string_view(contents.data(),contents.size())!=expected)
+                throw std::runtime_error(
+                    "Private launch-policy content changed; refusing to overwrite or launch");
+            UniqueHandle native_reader(CreateFileW(path.c_str(),GENERIC_READ,
+                FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT,nullptr));
+            if (!native_reader.valid())
+                throw_last_error("Verify native read admission for private launch-policy file");
+            // Hold the exact verified file (no write/delete sharing) and its
+            // pinned ancestors through process creation/bootstrap admission.
+            return lease;
+        }
+    }
+
+    void prepare_launch_policy_config(const LaunchPlan& plan)
+    {
+        static_cast<void>(build_game_command_line(plan));
+        static_cast<void>(stage_launch_policy_config(plan));
+    }
+
     void prepare_runtime(const LaunchPlan& plan)
     {
         const auto report = diagnose(plan);
@@ -6864,6 +7067,7 @@ namespace wawvr::launcher
         copy_runtime_handoff_files(plan);
         write_runtime_multiplayer_handoff_config(plan);
         copy_optional_pezbot_helper_to_runtime(plan);
+        prepare_launch_policy_config(plan);
     }
 
     void prepare_runtime_data_links(const LaunchPlan& plan)
@@ -6958,6 +7162,8 @@ namespace wawvr::launcher
             enforce_offline_multiplayer_listen_profile(effective_plan);
         }
         auto command_line = build_game_command_line(effective_plan);
+        auto launch_policy_lease=stage_launch_policy_config(effective_plan);
+        static_cast<void>(launch_policy_lease);
         std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
         mutable_command.push_back(L'\0');
         std::vector<wchar_t> child_environment;

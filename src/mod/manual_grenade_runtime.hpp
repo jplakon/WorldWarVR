@@ -58,6 +58,16 @@ enum class ManualGrenadeGameplaySession : std::uint8_t {
 // the native button path. The physical belt interaction remains the default.
 [[nodiscard]] bool button_grenade_mode_enabled() noexcept;
 
+// Fresh game-thread publication of the native live-enemy-grenade window.
+// Safe to consume from the renderer: returns zero when stale, unfocused,
+// inactive, or unavailable, and never dereferences game memory there.
+[[nodiscard]] std::int32_t read_manual_grenade_throwback_time_left() noexcept;
+
+// Disabled until a validated native offhand-consumption seam can prove that
+// the enemy grenade was acquired before an ordinary frag command can fall
+// through to fresh inventory. A positive window is not that witness.
+[[nodiscard]] bool contextual_manual_grenade_throwback_available() noexcept;
+
 // Runs at the validated post-CL_CreateCmd seam. In the default physical mode,
 // the left index trigger may begin a belt grab only on a fresh edge. In button
 // mode it directly holds WaW's native frag command and does not reserve either

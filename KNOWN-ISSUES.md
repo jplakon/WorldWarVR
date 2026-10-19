@@ -1,6 +1,38 @@
 # Known issues
 
-World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent changes received focused tests rather than another complete Campaign replay on the final beta.5 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent changes received focused tests rather than another complete Campaign replay on the final beta.6 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+
+## Beta.6 acceptance scope
+
+- Exact-profile aiming changes cover the Garand, unscoped Mosin and starting
+  Nacht `zombie_colt`, not every pistol, upgraded variant or scope. Five corrected
+  Colt native discharge/initial-hit samples followed the current sight geometry,
+  including off-headset aiming and genuine two-hand mode; a later local headset
+  check reported success. Static near/mid/far zero and every sight picture are
+  not certified. Native recoil, spread and muzzle-to-sight parallax remain.
+- Stick-click melee is disabled by default; deliberate physical attacks remain.
+  Advanced opt-in `WAWVR_RIGHT_STICK_MELEE=1` is not a new launcher checkbox.
+  Other hardware and affected-user physical-melee reports still need feedback.
+- Sprint, reload, grip recovery and smoothing have focused Tester/headset work,
+  not exhaustive coverage of all reload families, empty/tactical combinations,
+  upgraded weapons, world-ammo pickups or motion-to-photon latency.
+- Little Resistance's support objective completed through controllers in Tester.
+  The mission still controls availability and valid targets; other support-tool
+  missions are not all certified.
+- Targeted VR hints and lower retrievable help are included, but literal or
+  localized tutorials can retain keyboard text. Unknown/remapped bindings use
+  generic labels. Holding/releasing Y/L-SECONDARY for help can still cycle the
+  weapon; only a completed mission-direction chord consumes that release.
+- The targeted Colt shared-surface missing-pieces defect is fixed; this is not a
+  complete all-weapon/material/state/eye audit.
+- Experimental practical enemy-grenade throwback remains unresolved and
+  hard-disabled. Its new contextual shortcut is not enabled or advertised as
+  playable. Existing normal grenade controls remain.
+- The managed launcher retains beta.5 behavior with beta.6 metadata. In
+  particular, Regional-Compatibility Test1's separate Campaign validation fix
+  is **not included**. Keep a working Test1 folder intact and ask before replacing
+  it. This release does not establish universal German/regional compatibility;
+  do not replace game EXEs or buy another edition based on this update alone.
 
 ## Modes
 
@@ -15,7 +47,7 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 - Quest Link/Air Link uses the launcher's **Quest Air Link compatibility** option and the 32-bit SteamVR OpenXR path. Beta.2 received Quest 3 physical-headset acceptance for upright stereo, tracking, weapon motion, and pause/resume on the tested SteamVR configuration; behavior can differ between SteamVR releases.
 - **Quest 3 through Meta Quest Link:** an earlier tester reported startup/menu crashes, then a successful short SteamVR session. Later focused Quest 3 testing accepted the SteamVR compatibility path described above, but it does not establish reliable operation on every Meta/SteamVR version. Virtual Desktop is also a locally verified configuration.
 - **Pimax Crystal Light:** earlier desktop-only output was linked to 32-bit OpenXR runtime discovery. The tester subsequently reported gameplay and weapon/rendering issues from working sessions. The latest fixes still require that tester's hardware retest; compatibility across Pimax runtimes and versions is not fully established.
-- **Valve Index / SteamVR:** audio with no headset image remains an open startup report. Supplied evidence includes OpenXR instance creation failing before any frames. An orientation or render-quality change is not a confirmed fix for this startup failure.
+- **Valve Index / SteamVR:** a previously affected tester reported successful headset gameplay after targeted startup diagnostics. This does not certify every Index/runtime/layer configuration; new audio-only startups still require a fresh log. No universal runtime or graphics-injector cause is claimed.
 - **Rift S:** Meta Horizon Link and SteamVR have previously been tested. A report that newer builds shoot above the sights while an older build works remains under investigation; beta.3's local aim tests do not establish acceptance on this affected headset.
 - A computer that previously worked but now launches only flat needs a fresh startup log and the exact runtime/build. This regression is separate from the Index and Pimax reports.
 - A runtime or headset restart can leave an already-running game black in the headset. Close the game and launch it again after the connection is stable.
@@ -69,8 +101,8 @@ World War VR is beta software. The creator completed the Campaign in VR during d
   coverage. Actual controller strength and feel still need hardware feedback.
 - The added trigger-release melee safeguard has simulator coverage; remaining
   real-world random-melee reports require affected-user confirmation.
-- Pistol support-hand placement remains a polish/reporting item and is not
-  claimed fixed by this update. Report the exact weapon, map, grip/action
+- Close pistol support and grip recovery have focused improvements; uncommon
+  proportions/variants still need reporting. Report the exact weapon, map, grip/action
   sequence, settings and build for remaining interaction problems.
 
 ## Game and third-party files

@@ -2889,6 +2889,83 @@ void test_cod4_two_hand_engagement_clamps_and_reset() {
           "explicit engagement reset clears all history");
 }
 
+void test_right_ray_two_hand_constraint_static_native_pose_roundoff() {
+    // Exact static Tester control geometry used by the Mosin near fixture.
+    // Check distinct fresh publications, not a same-generation cached answer:
+    // normalizing the unchanged direction a second time can make dot(v,v)
+    // slightly less than one although cross(v,v) is still exactly zero.
+    constexpr double kDegreesToRadians =
+        3.14159265358979323846 / 180.0;
+    for (const float yaw : {0.0F, -15.0F, 15.0F, -40.0F, 40.0F}) {
+        for (const float pitch : {0.0F, -12.0F}) {
+            const float yaw_radians =
+                yaw * static_cast<float>(kDegreesToRadians);
+            const float pitch_radians =
+                pitch * static_cast<float>(kDegreesToRadians);
+            const float cy = std::cos(yaw_radians * 0.5F);
+            const float sy = std::sin(yaw_radians * 0.5F);
+            const float cp = std::cos(pitch_radians * 0.5F);
+            const float sp = std::sin(pitch_radians * 0.5F);
+            xr::Posef reference{};
+            reference.position = {0.0F, 1.7F, 0.0F};
+            xr::Posef right{};
+            right.position = {0.2F, 1.7F - 0.28F, -0.44F};
+            right.orientation = {cy * sp, sy * cp, -sy * sp, cy * cp};
+            xr::Posef left = right;
+            const double yd = yaw * kDegreesToRadians;
+            const double pd = pitch * kDegreesToRadians;
+            left.position = {
+                static_cast<float>(0.2 - 0.1 * std::cos(yd) -
+                                   0.31 * std::cos(pd) * std::sin(yd)),
+                1.7F + static_cast<float>(-0.28 + 0.31 * std::sin(pd)),
+                static_cast<float>(-0.44 + 0.1 * std::sin(yd) -
+                                   0.31 * std::cos(pd) * std::cos(yd))};
+            const auto right_relative = xr::OpenXrPoseToIwRelative(
+                right, reference);
+            const auto left_relative = xr::OpenXrPoseToIwRelative(
+                left, reference);
+            const mod::ControllerWeaponPose raw_right{
+                right_relative.position, right_relative.axis};
+            const mod::ControllerWeaponPose raw_left{
+                left_relative.position, left_relative.axis};
+            mod::RightRayTwoHandSteeringState state{};
+            mod::ControllerWeaponPose pose{};
+            for (std::uint64_t sample = 1; sample <= 1'000; ++sample) {
+                check(mod::update_right_ray_two_hand_steering_pose(
+                          sample, 1'000 + 16 * (sample - 1),
+                          kIdentityTrackingAnchorOrientation, raw_right,
+                          raw_right, raw_left, &state, &pose),
+                      "an unchanged native controller pair remains fresh after normalization roundoff");
+                check(state.generation == sample &&
+                          state.phase == mod::RightRayTwoHandSteeringPhase::Quiet,
+                      "static pair advances each fresh publication without false steering");
+                check_vector_exact(pose.grip_position, raw_right.grip_position,
+                                   "static pair preserves the exact right root");
+                check_basis_exact(pose.aim_axis, raw_right.aim_axis,
+                                  "static pair preserves the exact accepted right ray");
+            }
+
+            // Same-direction roundoff handling must not create an arbitrary
+            // rotation axis for a genuinely opposite support direction.
+            mod::ControllerWeaponPose opposite_left = raw_left;
+            opposite_left.grip_position = {
+                2.0F * raw_right.grip_position.x - raw_left.grip_position.x,
+                2.0F * raw_right.grip_position.y - raw_left.grip_position.y,
+                2.0F * raw_right.grip_position.z - raw_left.grip_position.z};
+            const auto before = state;
+            const auto output_before = pose;
+            check(!mod::update_right_ray_two_hand_steering_pose(
+                      1'001, 17'000, kIdentityTrackingAnchorOrientation,
+                      raw_right, raw_right, opposite_left, &state, &pose),
+                  "opposite support direction still fails without a trustworthy rotation axis");
+            check(state.generation == before.generation,
+                  "rejected opposite pair cannot advance committed history");
+            check_basis_exact(pose.aim_axis, output_before.aim_axis,
+                              "rejected opposite pair cannot mutate output");
+        }
+    }
+}
+
 void test_right_ray_two_hand_constraint_latches_without_a_pose_shift() {
     const xr::Basis3f identity = yaw_basis(0.0F);
     mod::ControllerWeaponPose stable_right{
@@ -3500,6 +3577,108 @@ void test_axis_to_engine_quaternion() {
           "yaw quaternion has no pitch/roll components");
 }
 
+void test_publication_filter_latency_and_recovery_contract() {
+    using mod::update_publication_controller_weapon_pose_filter;
+    using mod::weapon_pose_response_for_elapsed;
+    for (const float response : {mod::kWeaponPositionResponse,
+                                 mod::kWeaponOrientationResponse,
+                                 mod::kQuietWeaponPositionResponse}) {
+        check(near(weapon_pose_response_for_elapsed(
+                       response, mod::kWeaponFilterReferenceIntervalMilliseconds),
+                   response, 0.000001F),
+              "90Hz retains the exact accepted adaptive response");
+        float elapsed_reference_residual = -1.0F;
+        for (const float rate : {72.0F, 90.0F, 120.0F}) {
+            const float interval = 1000.0F / rate;
+            const float fractional_samples = 50.0F / interval;
+            const int full_samples = static_cast<int>(fractional_samples);
+            float residual = 1.0F;
+            for (int sample = 0; sample < full_samples; ++sample) {
+                residual *= 1.0F - weapon_pose_response_for_elapsed(response, interval);
+            }
+            const float remaining = 50.0F - full_samples * interval;
+            if (remaining > 0.00001F) {
+                residual *= 1.0F - weapon_pose_response_for_elapsed(response, remaining);
+            }
+            if (elapsed_reference_residual < 0.0F) elapsed_reference_residual = residual;
+            check(near(residual, elapsed_reference_residual, 0.000001F),
+                  "72/90/120Hz produce equal response over equal elapsed time");
+        }
+        check(weapon_pose_response_for_elapsed(response, 251.0F) == response &&
+                  weapon_pose_response_for_elapsed(response, -1.0F) == response,
+              "a long interrupted or regressed interval cannot bypass tracking retirement");
+        check(weapon_pose_response_for_elapsed(response, 0.0F) == 0.0F,
+              "two fresh publications in one coarse clock tick cannot double-count elapsed time");
+    }
+
+    const auto fixture = tracked_snapshot();
+    auto hand = fixture.frame.actions.hands[static_cast<std::size_t>(xr::Hand::Right)];
+    mod::ControllerWeaponPoseFilterState state{};
+    check(update_publication_controller_weapon_pose_filter(hand, 1, 1000, &state),
+          "actual publication filter seeds from the current hand without pickup lag");
+    const auto initial = state;
+    hand.grip.pose.position.x += 0.10F;
+    check(update_publication_controller_weapon_pose_filter(hand, 2, 1014, &state),
+          "actual publication filter consumes a deliberate72Hz position sample");
+    const float expected_response = weapon_pose_response_for_elapsed(
+        mod::kWeaponPositionResponse, 14.0F);
+    check(near(state.filtered_grip_position.x,
+               initial.filtered_grip_position.x + 0.10F * expected_response,
+               0.000001F),
+          "live helper uses publication elapsed time rather than a slower fixed frame response");
+    const auto moved = state;
+    hand.grip.pose.position.x += 0.10F;
+    check(update_publication_controller_weapon_pose_filter(hand, 2, 1014, &state),
+          "repeat consumers receive the same publication");
+    check_vector_exact(state.filtered_grip_position, moved.filtered_grip_position,
+                       "repeat consumers cannot advance smoothing a second time");
+    check(!update_publication_controller_weapon_pose_filter(hand, 1, 1028, &state) &&
+              !update_publication_controller_weapon_pose_filter(hand, 3, 1013, &state),
+          "regressed generation/time fails without advancing the accepted history");
+    hand.grip.active = false;
+    check(!update_publication_controller_weapon_pose_filter(hand, 3, 1028, &state),
+          "unavailable tracking cannot manufacture a new pose");
+    hand.grip.active = true;
+    hand.grip.pose.position.x += 2.0F;
+    check(!update_publication_controller_weapon_pose_filter(hand, 4, 1600, &state),
+          "late relocalization still fails the discontinuity gate");
+    check_vector_exact(state.filtered_grip_position, moved.filtered_grip_position,
+                       "tracking rejection retains the complete accepted baseline");
+    mod::reset_controller_weapon_pose_filter(&state);
+    check(update_publication_controller_weapon_pose_filter(hand, 5, 1614, &state),
+          "only an explicit owning-hook retirement reset permits a fresh baseline");
+    check_vector_exact(state.filtered_grip_position, hand.grip.pose.position,
+                       "an explicitly rearmed pickup seeds the actual new hand position");
+
+    // A deliberate 10 cm step stays in the established fast-response region
+    // until its final few millimetres. The real adaptive helper must settle
+    // within a small, bounded number of fresh samples at each tested rate.
+    for (const int interval : {8, 11, 14}) {
+        state = {};
+        hand = fixture.frame.actions.hands[static_cast<std::size_t>(xr::Hand::Right)];
+        check(update_publication_controller_weapon_pose_filter(hand, 1, 2000, &state),
+              "latency trial starts from a coherent grip");
+        const float target = hand.grip.pose.position.x + 0.10F;
+        hand.grip.pose.position.x = target;
+        int elapsed = 0;
+        int settled = -1;
+        for (std::uint64_t sample = 2; sample <= 30; ++sample) {
+            elapsed += interval;
+            check(update_publication_controller_weapon_pose_filter(
+                      hand, sample, 2000 + elapsed, &state),
+                  "latency trial advances through actual fresh publications");
+            if (settled < 0 && std::abs(target - state.filtered_grip_position.x) <= 0.010F) {
+                settled = elapsed;
+            }
+        }
+        check(settled > 0 && settled <= 56,
+              "10 cm deliberate motion reaches 90 percent within 56 ms at 72/90/120Hz");
+        std::printf("publication-filter: interval=%dms step=100mm t90=%dms finalError=%.6fmm\n",
+                    interval, settled,
+                    std::abs(target - state.filtered_grip_position.x) * 1000.0F);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -3539,6 +3718,7 @@ int main() {
     test_cod4_two_hand_engagement_skipped_generation_cadence();
     test_cod4_two_hand_engagement_anchor_cache_key();
     test_cod4_two_hand_engagement_clamps_and_reset();
+    test_right_ray_two_hand_constraint_static_native_pose_roundoff();
     test_right_ray_two_hand_constraint_latches_without_a_pose_shift();
     test_right_ray_two_hand_constraint_allows_deliberate_relative_steering();
     test_right_ray_two_hand_constraint_cancels_common_rigid_motion();
@@ -3556,5 +3736,6 @@ int main() {
     test_evaluated_viewmodel_skeleton_translation();
     test_translated_viewmodel_tag_match_tolerates_float_reassociation();
     test_axis_to_engine_quaternion();
+    test_publication_filter_latency_and_recovery_contract();
     return 0;
 }

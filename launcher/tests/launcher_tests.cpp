@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -51,9 +52,8 @@ namespace
         require(
             count_occurrences(command, L"+set com_maxfps ") == 1 &&
                 count_occurrences(command, L"+set r_vsync ") == 1 &&
-                count_occurrences(
-                    command,
-                    L"+set com_maxfps 0 +set r_vsync 0") == 1,
+                count_occurrences(command,L"+set com_maxfps 0") == 1 &&
+                count_occurrences(command,L"+set r_vsync 0") == 1,
             "launch command did not contain the exact uncapped-FPS/disabled-vsync policy");
     }
 
@@ -95,9 +95,9 @@ namespace
         const bool expected)
     {
         const auto exact_count =
-            count_occurrences(command, L"+seta mis_01 50");
+            count_occurrences(command, L"+set mis_01 50");
         const auto any_count =
-            count_occurrences(command, L"+seta mis_01 ");
+            count_occurrences(command, L"+set mis_01 ");
         if (!expected)
         {
             require(exact_count == 0 && any_count == 0 &&
@@ -111,12 +111,14 @@ namespace
 
         require(exact_count == 1 && any_count == 1,
                 "SP launch command did not contain exactly one campaign unlock");
+        require(command.find(L"+seta mis_01") == std::wstring_view::npos,
+                "startup unlock should remain process-local before runtime archiving");
         require(command.find(L"mis_cheat") == std::wstring_view::npos &&
                     command.find(L"mis_difficulty") == std::wstring_view::npos &&
                     command.find(L"mis_01_unlock") == std::wstring_view::npos &&
                     command.find(L"ui_sp_unlock") == std::wstring_view::npos,
                 "campaign unlock changed unrelated campaign state");
-        const auto unlock = command.find(L"+seta mis_01 50");
+        const auto unlock = command.find(L"+set mis_01 50");
         const auto direct_map = command.find(L"+devmap");
         require(direct_map == std::wstring_view::npos || unlock < direct_map,
                 "campaign unlock was applied after the direct-map command");
@@ -591,12 +593,14 @@ namespace
         direct_mp.pezbot_enabled = true;
         require(!should_import_optional_pezbot(direct_mp) &&
                     !inspect_optional_pezbot(direct_mp).enabled() &&
-                    build_game_command_line(direct_mp).find(
-                        L"+set wawvr_pezbot_autofill 0") !=
-                        std::wstring::npos &&
-                    build_game_command_line(direct_mp).find(
-                        L"+set wawvr_pezbot_autofill 9") ==
-                        std::wstring::npos,
+                    launch_policy_config_contents(direct_mp).find(
+                        "set wawvr_pezbot_autofill 0\n") !=
+                        std::string_view::npos &&
+                    launch_policy_config_contents(direct_mp).find(
+                        "set wawvr_pezbot_autofill 9\n") ==
+                        std::string_view::npos &&
+                    build_game_command_line(direct_mp).ends_with(
+                        L"+exec "+launch_policy_config_path(direct_mp).filename().wstring()),
                 "disabled bot policy discovered, enabled, or autofilled PeZBOT");
 
         require(multiplayer_handoff_config_path(runtime_shim) ==
@@ -788,6 +792,7 @@ namespace
             L"steamappid=old",
             L"STEAMGAMEID=old",
             L"WAWVR_TURN_MODE=smooth",
+            L"WAWVR_RIGHT_STICK_MELEE=0",
             L"WAWVR_DEFER_XR_BEGIN_FRAME=1",
             L"XR_RUNTIME_JSON=C:\\Pimax\\Runtime\\PiOpenXR_32.json",
             L"WAWVR_OPENXR_RUNTIME_SELECTION=pimax-x86",
@@ -829,6 +834,7 @@ namespace
                      count_case_insensitive(L"STEAMGAMEID=old") == 0 &&
                      count_case_insensitive(L"Path=C:\\Windows") == 1 &&
                      count_case_insensitive(L"WAWVR_TURN_MODE=smooth") == 1 &&
+                     count_case_insensitive(L"WAWVR_RIGHT_STICK_MELEE=0") == 1 &&
                      count_case_insensitive(L"WAWVR_DEFER_XR_BEGIN_FRAME=1") == 1 &&
                      count_case_insensitive(
                          L"XR_RUNTIME_JSON=C:\\Pimax\\Runtime\\PiOpenXR_32.json") == 1 &&
@@ -845,6 +851,7 @@ namespace
             L"SteamAppId=old",
             L"SteamGameId=old",
             L"WAWVR_TURN_MODE=smooth",
+            L"WAWVR_RIGHT_STICK_MELEE=1",
             L"XR_RUNTIME_JSON=C:\\Runtime\\openxr.json",
             L"=C:=C:\\fixture",
         };
@@ -1428,10 +1435,32 @@ namespace
 
     void test_command_line()
     {
+        // Policy assertions below inspect the actual command plus the exact
+        // config at its exec position. Separate budget tests inspect the real
+        // compact command and simulate the native splitter capacity.
+        const auto build_game_command_line = [](const LaunchPlan& input) {
+            auto expanded=::wawvr::launcher::build_game_command_line(input);
+            const auto marker=L"+exec "+launch_policy_config_path(input).filename().wstring();
+            const auto at=expanded.find(marker);
+            require(at!=std::wstring::npos,"private policy exec missing from startup command");
+            std::string line;
+            std::wstring policy;
+            std::istringstream stream{std::string(launch_policy_config_contents(input))};
+            while (std::getline(stream,line)) {
+                if (line.starts_with("//") || line.empty()) continue;
+                require(line.starts_with("set "),"private policy gained a non-dvar command");
+                if (!policy.empty()) policy+=L' ';
+                policy+=L'+';
+                policy.append(line.begin(),line.end());
+            }
+            expanded.replace(at,marker.size(),policy);
+            return expanded;
+        };
         LaunchPlan plan;
         plan.staged_exe = L"C:\\Local Data\\WaWVR\\CoDWaW.exe";
         plan.game_dir = L"E:\\fixture-game";
         plan.home_dir = L"C:\\Local Data\\WaWVR\\home";
+        plan.home_dir_is_launcher_managed = true;
         const auto command = build_game_command_line(plan);
         require_exact_openxr_pacing_policy(command);
         require_exact_view_bob_policy(command);
@@ -1446,7 +1475,34 @@ namespace
         require(command.find(L"+set fs_homepath") != std::wstring::npos,
                 "fs_homepath command missing");
         require(command.find(L"+set fs_localAppData") == std::wstring::npos,
-                "SP command unexpectedly gained the MP-only local data root");
+                "managed SP default unexpectedly changed its local data root");
+        for (const auto identity : {
+                 ExecutableIdentityId::plutonium_sp_1_7_1263,
+                 ExecutableIdentityId::steam_sp_build_252004})
+        {
+            for (const auto target : {
+                     LaunchTarget::nacht,
+                     LaunchTarget::frontend_menu})
+            {
+                auto caller_owned = plan;
+                caller_owned.executable_identity = identity;
+                caller_owned.launch_target = target;
+                caller_owned.home_dir_is_launcher_managed = false;
+                const auto isolated = build_game_command_line(caller_owned);
+                const std::wstring expected =
+                    L"+set fs_localAppData \"C:\\Local Data\\WaWVR\\home\"";
+                const auto first = isolated.find(expected);
+                require(first != std::wstring::npos &&
+                            isolated.find(expected, first + expected.size()) ==
+                                std::wstring::npos,
+                        "caller-owned SP home must explicitly isolate the profile root once");
+                require(isolated.find(
+                            L"+set fs_homepath \"C:\\Local Data\\WaWVR\\home\"") !=
+                            std::wstring::npos &&
+                            first < isolated.find(L"+set mis_01 50"),
+                        "caller-owned SP profile root must agree with homepath before archived commands");
+            }
+        }
         require(command.find(L"+set r_customMode 2560x1440") != std::wstring::npos,
                 "default high-clarity VR packed source resolution missing");
         require(command.find(L"+set r_fullscreen 0") != std::wstring::npos,
@@ -1679,7 +1735,7 @@ namespace
         const auto pel2_map = campaign_pel2_airfield_command.find(
             L"+spdevmap pel2");
         require(
-            campaign_pel2_airfield_command.find(L"+seta mis_01 50") <
+            campaign_pel2_airfield_command.find(L"+set mis_01 50") <
                     pel2_monkeytoy &&
                 pel2_monkeytoy < pel2_start && pel2_start < pel2_map &&
                 campaign_pel2_airfield_command.ends_with(L"+spdevmap pel2"),
@@ -1713,6 +1769,210 @@ namespace
                     fallback_menu.find(L"+devmap") == std::wstring::npos &&
                     fallback_menu.find(L"+set r_mode ") == std::wstring::npos,
                 "frontend/menu did not honor the explicit recovery resolution");
+    }
+
+    void test_startup_command_budget_and_private_policy(const fs::path& root)
+    {
+        struct EnvironmentRestore {
+            std::optional<std::wstring> previous;
+            EnvironmentRestore() {
+                const auto size=GetEnvironmentVariableW(L"WAWVR_DISABLE_ZFEATHER",nullptr,0);
+                if (size) {
+                    std::wstring value(size,L'\0');
+                    const auto count=GetEnvironmentVariableW(L"WAWVR_DISABLE_ZFEATHER",value.data(),size);
+                    require(count<size,"cannot snapshot optional startup flag");
+                    value.resize(count); previous=std::move(value);
+                }
+            }
+            ~EnvironmentRestore() {
+                SetEnvironmentVariableW(L"WAWVR_DISABLE_ZFEATHER",
+                    previous ? previous->c_str() : nullptr);
+            }
+        } environment_restore;
+        LaunchPlan plan;
+        plan.game_dir=root/L"policy-game";
+        plan.source_exe=plan.game_dir/L"t4sp.exe";
+        plan.runtime_dir=root/L"policy-runtime";
+        plan.home_dir=root/L"policy-home";
+        plan.staged_exe=plan.runtime_dir/L"CoDWaW.exe";
+        std::size_t maximum_seen=0;
+        for (const auto target : {LaunchTarget::nacht,LaunchTarget::der_riese,
+                 LaunchTarget::campaign_ber1,LaunchTarget::campaign_pel2_airfield,
+                 LaunchTarget::frontend_menu,LaunchTarget::offline_multiplayer})
+        for (const bool managed : {false,true})
+        for (const bool bots : {false,true})
+        for (const auto bot_policy : {BotPolicy::automatic,BotPolicy::disabled})
+        for (const bool feather : {false,true})
+        for (const auto resolution : {kDefaultSourceResolution,
+                 kPerformanceSourceResolution,kFallbackSourceResolution}) {
+            plan.launch_target=target;
+            plan.executable_kind=target==LaunchTarget::offline_multiplayer
+                ? ExecutableKind::mp : ExecutableKind::sp;
+            plan.executable_identity=plan.executable_kind==ExecutableKind::mp
+                ? ExecutableIdentityId::steam_mp_build_252004
+                : ExecutableIdentityId::steam_sp_build_252004;
+            plan.home_dir_is_launcher_managed=managed;
+            plan.pezbot_enabled=bots; plan.bot_policy=bot_policy;
+            plan.source_resolution=resolution;
+            require(SetEnvironmentVariableW(L"WAWVR_DISABLE_ZFEATHER",feather ? L"1" : nullptr)!=FALSE,
+                "cannot set optional startup flag fixture");
+            const auto command=build_game_command_line(plan);
+            const auto count=static_cast<std::size_t>(std::count(command.begin(),command.end(),L'+'));
+            maximum_seen=(std::max)(maximum_seen,count);
+            require(count<=31,"a launch target/bot/flag combination exceeds native startup capacity");
+            require(count_occurrences(command,L"+exec "+launch_policy_config_path(plan).filename().wstring())==1,
+                "private policy must execute exactly once");
+            require(command.find(L"+set fs_basepath")!=std::wstring::npos &&
+                command.find(L"+set r_smp_backend 0")!=std::wstring::npos &&
+                command.find(L"+set r_multiGpu 0")!=std::wstring::npos &&
+                command.find(L"+set r_customMode ")!=std::wstring::npos &&
+                command.find(L"+set sm_enable 0")!=std::wstring::npos &&
+                command.find(L"+set sc_enable 0")!=std::wstring::npos &&
+                command.find(L"+set sm_sunEnable 0")!=std::wstring::npos &&
+                command.find(L"+set sm_spotEnable 0")!=std::wstring::npos,
+                "early file-system/renderer safety settings moved out of early startup");
+            require(command.find(L"+set cg_drawCrosshair ")==std::wstring::npos &&
+                launch_policy_config_contents(plan).find("set cg_drawCrosshair 0\n")!=std::string_view::npos,
+                "late HUD policy must be preserved in private config");
+            for (const auto* protected_dvar : {L"bg_bobMax 0",L"cg_drawCrosshairNames 0",
+                     L"cg_crosshairAlpha 0",L"cg_crosshairAlphaMin 0",
+                     L"cg_firstPersonTracerChance 1",L"aim_automelee_enabled 0",
+                     L"player_meleeRange 96"})
+                require(command.find(std::wstring(L"+set ")+protected_dvar)!=std::wstring::npos,
+                    "protected gameplay policy moved out of early StartupVariable path");
+            const auto direct_map=command.find(L"+devmap");
+            const auto script_map=command.find(L"+spdevmap");
+            const auto map=(std::min)(direct_map,script_map);
+            require(map==std::wstring::npos || command.find(L"+exec wawvr_policy_")<map,
+                "private launch policy must execute before map loading");
+            if (target==LaunchTarget::offline_multiplayer)
+                require(command.find(L"+set onlinegame 0")!=std::wstring::npos &&
+                    command.find(L"+set dedicated 0")!=std::wstring::npos &&
+                    command.find(L"+set cl_punkbuster 0")!=std::wstring::npos &&
+                    command.find(L"+set sv_punkbuster 0")!=std::wstring::npos &&
+                    command.ends_with(L"+exec "+launch_policy_config_path(plan).filename().wstring()) &&
+                    launch_policy_config_contents(plan).find("set ui_netSource 0\n")!=std::string_view::npos &&
+                    launch_policy_config_contents(plan).ends_with("set ui_dedicated 0\n") &&
+                    (!bots || bot_policy==BotPolicy::disabled ||
+                        command.find(L"+exec pezbot.cfg")<command.find(L"+exec wawvr_policy_")),
+                    "MP early network/listen safeguards or late LAN browser policy changed");
+        }
+        require(maximum_seen==31,"worst-case optional MP/bot launch must exercise exact parser boundary");
+
+        // Exact native 0x0059AFA0 behavior: leading prefix uses one segment;
+        // when count reaches 32 the next '+' is left inside segment31.
+        const auto split_native=[](std::wstring_view text) {
+            std::vector<std::wstring> segments;
+            std::size_t start=0;
+            for (std::size_t i=0;i<text.size();++i) {
+                if (text[i]!=L'+' && text[i]!=L'\n') continue;
+                if (segments.size()==31) break;
+                segments.emplace_back(text.substr(start,i-start)); start=i+1;
+            }
+            segments.emplace_back(text.substr(start)); return segments;
+        };
+        std::wstring boundary=L"CoDWaW.exe ";
+        for (unsigned i=1;i<=31;++i) boundary+=L"+set test_"+std::to_wstring(i)+L" 0 ";
+        validate_t4_startup_command_budget(boundary);
+        require(split_native(boundary).size()==32 &&
+            split_native(boundary).back().find(L'+')==std::wstring::npos,
+            "31 commands must all survive native splitter");
+        boundary+=L"+devmap nazi_zombie_prototype";
+        bool rejected=false;
+        try { validate_t4_startup_command_budget(boundary); }
+        catch (const std::invalid_argument&) { rejected=true; }
+        require(rejected && split_native(boundary).back().find(L"+devmap")!=std::wstring::npos,
+            "32nd command must be rejected instead of swallowed into a dvar");
+        for (const auto& unsafe : {L"CoDWaW.exe +set x 0\nquit",L"CoDWaW.exe +set x 0\rquit"}) {
+            rejected=false;
+            try { validate_t4_startup_command_budget(unsafe); }
+            catch (const std::invalid_argument&) { rejected=true; }
+            require(rejected,"line-break command injection was accepted");
+        }
+        plan.launch_target=LaunchTarget::nacht;
+        plan.executable_kind=ExecutableKind::sp;
+        plan.executable_identity=ExecutableIdentityId::steam_sp_build_252004;
+        plan.source_resolution=kDefaultSourceResolution;
+        plan.home_dir_is_launcher_managed=false;
+        for (unsigned which=0;which<3;++which) {
+            auto unsafe=plan;
+            if (which==0) unsafe.home_dir/=L"name+set";
+            else if (which==1) unsafe.game_dir/=L"name+set";
+            else unsafe.staged_exe=unsafe.runtime_dir/L"name+set.exe";
+            rejected=false;
+            try { static_cast<void>(build_game_command_line(unsafe)); }
+            catch (const std::invalid_argument&) { rejected=true; }
+            require(rejected,"quotes do not make '+' safe in T4 startup paths");
+        }
+
+        fs::create_directories(plan.game_dir/L"main");
+        fs::create_directories(plan.game_dir/L"zone");
+        fs::create_directories(plan.runtime_dir);
+        fs::create_directories(plan.home_dir/L"main");
+        write_binary_file(plan.game_dir/L"main"/L"config.cfg","stock settings untouched");
+        write_binary_file(plan.home_dir/L"main"/L"config.cfg","private user settings untouched");
+        prepare_launch_policy_config(plan);
+        const auto policy_file=launch_policy_config_path(plan);
+        require(read_binary_file(policy_file)==launch_policy_config_contents(plan) &&
+            sha256_file(policy_file)=="BF0549748691B2B7EBFD6F9C3056BEFC48441125B6F6D8D17CB5E00AEC633274",
+            "SP private config bytes/content-addressed identity changed");
+        prepare_launch_policy_config(plan);
+        require(read_binary_file(plan.game_dir/L"main"/L"config.cfg")=="stock settings untouched" &&
+            read_binary_file(plan.home_dir/L"main"/L"config.cfg")=="private user settings untouched",
+            "policy staging modified an existing config/profile");
+        auto mp=plan; mp.launch_target=LaunchTarget::offline_multiplayer;
+        mp.executable_kind=ExecutableKind::mp;
+        mp.executable_identity=ExecutableIdentityId::steam_mp_build_252004;
+        mp.bot_policy=BotPolicy::disabled;
+        prepare_launch_policy_config(mp);
+        require(sha256_file(launch_policy_config_path(mp))==
+            "9049D2306710F7D989C8183AB294E78764A6CF9DD015D0BBB27F0E159CD9F85E",
+            "MP content-addressed LAN-browser policy changed");
+        auto bots=mp; bots.bot_policy=BotPolicy::automatic; bots.pezbot_enabled=true;
+        prepare_launch_policy_config(bots);
+        require(sha256_file(launch_policy_config_path(bots))==
+            "FCB099C61133BA70F154DFE8ECDA61727DD5DCF6EE3638ED80ADDB00C7FADB56",
+            "MP bot defaults or final listen selector changed");
+
+        write_binary_file(policy_file,"user conflict: preserve me");
+        rejected=false;
+        try { prepare_launch_policy_config(plan); }
+        catch (const std::exception&) { rejected=true; }
+        require(rejected && read_binary_file(policy_file)=="user conflict: preserve me",
+            "conflicting private config was overwritten instead of rejected");
+        fs::remove(policy_file);
+        const auto hardlink_source=root/L"policy-hardlink-source.cfg";
+        write_binary_file(hardlink_source,launch_policy_config_contents(plan));
+        require(CreateHardLinkW(policy_file.c_str(),hardlink_source.c_str(),nullptr)!=FALSE,
+            "cannot create isolated hardlink fixture");
+        rejected=false;
+        try { prepare_launch_policy_config(plan); }
+        catch (const std::exception&) { rejected=true; }
+        require(rejected && read_binary_file(hardlink_source)==launch_policy_config_contents(plan),
+            "hardlinked policy file was accepted or modified");
+        fs::remove(policy_file);
+        const auto collision=plan.game_dir/L"main"/policy_file.filename();
+        write_binary_file(collision,"stock collision: preserve me");
+        rejected=false;
+        try { prepare_launch_policy_config(plan); }
+        catch (const std::exception&) { rejected=true; }
+        require(rejected && read_binary_file(collision)=="stock collision: preserve me" &&
+            !fs::exists(policy_file),"another search-root policy was masked or modified");
+        fs::remove(collision);
+        fs::remove(launch_policy_config_path(mp));
+        fs::remove(launch_policy_config_path(bots));
+        fs::remove(plan.home_dir/L"main"/L"config.cfg");
+        fs::remove(plan.home_dir/L"main");
+        auto junction_plan=plan;
+        junction_plan.runtime_dir=plan.home_dir;
+        junction_plan.home_dir=root/L"policy-unused-home";
+        prepare_runtime_data_links(junction_plan);
+        rejected=false;
+        try { prepare_launch_policy_config(plan); }
+        catch (const std::exception&) { rejected=true; }
+        require(rejected && !fs::exists(plan.game_dir/L"main"/policy_file.filename()),
+            "a redirected home/main junction was followed for a policy write");
+        remove_runtime_junctions(plan.home_dir);
     }
 
     void test_multiplayer_profile_normalization(const fs::path& root)
@@ -3229,6 +3489,7 @@ int wmain()
         test_game_language_detection_and_cache_refresh(root);
         test_runtime_data_junctions(root);
         test_command_line();
+        test_startup_command_budget_and_private_policy(root);
         test_multiplayer_profile_normalization(root);
         test_pezbot_import(root);
         test_source_resolution();

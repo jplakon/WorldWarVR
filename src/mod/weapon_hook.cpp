@@ -23,15 +23,21 @@
 #include "pistol_support_pose.hpp"
 #include "post_t4_aim_phase_logic.hpp"
 #include "rocket_barrage_logic.hpp"
+#include "server_impact_audit.hpp"
+#include "server_impact_identity_logic.hpp"
+#include "sight_audit.hpp"
 #include "stereo_diagnostics.hpp"
 #include "t4_layout_selector.hpp"
 #include "two_hand_sight_alignment_policy.hpp"
 #include "viewmodel_filter.hpp"
 #include "weapon_ballistics_logic.hpp"
+#include "calibrated_rifle_basis.hpp"
+#include "calibrated_pistol_basis.hpp"
 #include "weapon_grip_logic.hpp"
 #include "weapon_identity_snapshot_reader.hpp"
 #include "weapon_placement.hpp"
 #include "weapon_pose_pipeline_trace_logic.hpp"
+#include "vr_gameplay_prompts.hpp"
 
 #include "t4/hook_api.hpp"
 #include "t4/profile.hpp"
@@ -624,8 +630,67 @@ struct RetailMarkCounters final {
     std::uint32_t freed{};
 };
 
-struct MosinImpactCorrelation final {
+enum class ImpactDiagnosticProfile : std::uint8_t {
+    Mosin,
+    Garand,
+    Unsupported,
+};
+
+struct ImpactDiagnosticIdentity final {
+    ImpactDiagnosticProfile profile{ImpactDiagnosticProfile::Unsupported};
+    std::array<char, 16> name{};
+};
+
+// This observer intentionally recognizes only these two canonical native
+// names. The copied, NUL-terminated label survives until the native spawn
+// returns without retaining a pointer into the weapon registration table.
+[[nodiscard]] constexpr ImpactDiagnosticIdentity impact_diagnostic_identity(
+    const std::string_view name) noexcept {
+    ImpactDiagnosticIdentity result{};
+    if (name == "mosin_rifle") {
+        result.profile = ImpactDiagnosticProfile::Mosin;
+    } else if (name == "m1garand") {
+        result.profile = ImpactDiagnosticProfile::Garand;
+    } else {
+        return result;
+    }
+    for (std::size_t index = 0; index < name.size(); ++index) {
+        result.name[index] = name[index];
+    }
+    return result;
+}
+
+[[nodiscard]] constexpr const char* impact_diagnostic_label(
+    const ImpactDiagnosticProfile profile) noexcept {
+    return profile == ImpactDiagnosticProfile::Mosin ? "Mosin"
+        : profile == ImpactDiagnosticProfile::Garand ? "M1Garand"
+        : "unsupported";
+}
+
+// Pure compile-time regressions keep aliases/scopes/custom variants out of
+// this diagnostic and prove the two independent cap slots and bounded copy.
+static_assert(impact_diagnostic_identity("mosin_rifle").profile ==
+    ImpactDiagnosticProfile::Mosin);
+static_assert(impact_diagnostic_identity("m1garand").profile ==
+    ImpactDiagnosticProfile::Garand);
+static_assert(static_cast<std::size_t>(ImpactDiagnosticProfile::Mosin) == 0 &&
+    static_cast<std::size_t>(ImpactDiagnosticProfile::Garand) == 1);
+static_assert(impact_diagnostic_identity("m1garand").name[8] == '\0' &&
+    impact_diagnostic_identity("mosin_rifle").name[11] == '\0');
+static_assert(impact_diagnostic_identity("mosin_rifle_scoped").profile ==
+    ImpactDiagnosticProfile::Unsupported);
+static_assert(impact_diagnostic_identity("m1garand_zombie").profile ==
+    ImpactDiagnosticProfile::Unsupported);
+static_assert(impact_diagnostic_identity("M1Garand").profile ==
+    ImpactDiagnosticProfile::Unsupported);
+static_assert(impact_diagnostic_identity(std::string_view{"m1garand\0x", 10}).profile ==
+    ImpactDiagnosticProfile::Unsupported);
+static_assert(impact_diagnostic_identity("").profile ==
+    ImpactDiagnosticProfile::Unsupported);
+
+struct ObservedImpactCorrelation final {
     bool armed{};
+    ImpactDiagnosticIdentity identity{};
     std::uint32_t sequence{};
     std::uint32_t local_client_number{};
     std::uint32_t source_entity{};
@@ -722,7 +787,7 @@ thread_local ChestWeaponPoseState g_chest_weapon_pose_state{};
 thread_local WeaponGripState g_weapon_grip_state{};
 thread_local CommittedWeaponGripState g_committed_weapon_grip{};
 thread_local std::uint64_t g_held_pose_failure_since_milliseconds = 0;
-thread_local MosinImpactCorrelation g_mosin_impact_correlation{};
+thread_local ObservedImpactCorrelation g_observed_impact_correlation{};
 thread_local PostT4VisibleAimDiagnosticState
     g_post_t4_visible_aim_diagnostic{};
 thread_local std::uint32_t g_post_t4_visible_aim_report_count = 0;
@@ -823,6 +888,20 @@ void log_campaign_angle_acceptance_once(
     return disabled;
 }
 
+// Private, startup-only measurement control. Default gameplay always tries
+// the exact Colt witness. Explicitly disabling it restores the prior branch
+// for an identity-bound before/after Tester comparison, not a global offset.
+[[nodiscard]] bool colt_sight_alignment_disabled_by_environment() noexcept {
+    static const bool disabled = []() noexcept {
+        const DWORD saved=GetLastError();
+        std::array<wchar_t,2> value{};
+        const bool result=GetEnvironmentVariableW(
+            L"WAWVR_DISABLE_COLT_SIGHT_ALIGNMENT",value.data(),2)==1&&value[0]==L'1';
+        SetLastError(saved); return result;
+    }();
+    return disabled;
+}
+
 [[nodiscard]] bool head_relative_weapon_freeze_enabled() noexcept {
     static const bool enabled = []() noexcept {
         std::array<wchar_t, 2> value{};
@@ -879,6 +958,18 @@ void log_campaign_angle_acceptance_once(
         return GetEnvironmentVariableW(
                    L"WAWVR_MOSIN_BULLET_DIAGNOSTICS", value.data(),
                    static_cast<DWORD>(value.size())) == 1 &&
+            value[0] == L'1';
+    }();
+    return enabled;
+}
+
+[[nodiscard]] bool gameplay_audit_enabled() noexcept {
+    // Developer evidence only. Normal gameplay does not pay the cost of
+    // per-shot identity formatting, trace logging or additional model reads.
+    static const bool enabled = []() noexcept {
+        std::array<wchar_t, 2> value{};
+        return GetEnvironmentVariableW(L"WAWVR_GAMEPLAY_DIAGNOSTICS",
+            value.data(), static_cast<DWORD>(value.size())) == 1 &&
             value[0] == L'1';
     }();
     return enabled;
@@ -2132,24 +2223,30 @@ void publish_weapon_frame_base_receipt(
     return true;
 }
 
-void publish_muzzle(
+std::uint64_t publish_muzzle(
     const std::uint64_t generation,
     const wawvr::xr::Vec3f& origin,
     const wawvr::xr::Basis3f* const projectile_basis,
-    const wawvr::xr::Basis3f* const weapon_root_basis = nullptr) noexcept {
+    const wawvr::xr::Basis3f* const weapon_root_basis = nullptr,
+    std::uint64_t* const diagnostic_publication_serial = nullptr) noexcept {
     if (generation == 0 || !std::isfinite(origin.x) ||
         !std::isfinite(origin.y) || !std::isfinite(origin.z)) {
-        return;
+        return 0;
     }
     const bool projectile_basis_valid =
         projectile_basis != nullptr && finite_basis(*projectile_basis);
     const bool weapon_root_basis_valid =
         weapon_root_basis != nullptr && finite_basis(*weapon_root_basis);
+    static std::atomic<std::uint64_t> diagnostic_serial{0};
+    const auto serial=sight_audit_enabled()
+        ? diagnostic_serial.fetch_add(1,std::memory_order_relaxed)+1 : 0;
+    if (diagnostic_publication_serial) *diagnostic_publication_serial=serial;
     AcquireSRWLockExclusive(&g_published_muzzle_lock);
+    const auto publication_milliseconds=GetTickCount64();
     g_published_muzzle = {
         true,
         generation,
-        GetTickCount64(),
+        publication_milliseconds,
         origin,
         projectile_basis_valid,
         projectile_basis_valid ? *projectile_basis : wawvr::xr::Basis3f{},
@@ -2157,11 +2254,14 @@ void publish_muzzle(
         weapon_root_basis_valid
             ? *weapon_root_basis
             : wawvr::xr::Basis3f{},
+        serial,
     };
     ReleaseSRWLockExclusive(&g_published_muzzle_lock);
+    return publication_milliseconds;
 }
 
 void invalidate_published_muzzle() noexcept {
+    invalidate_rendered_sight_audit();
     AcquireSRWLockExclusive(&g_published_muzzle_lock);
     g_published_muzzle = {};
     ReleaseSRWLockExclusive(&g_published_muzzle_lock);
@@ -2478,6 +2578,161 @@ profile_from_weapon_definition(
         sizeof(snapshot.freed));
     snapshot.valid = true;
     return snapshot;
+}
+
+bool read_server_impact_audit_identity(
+    const void* const attacker, const void* const definition,
+    ServerImpactAuditIdentity* const output) noexcept {
+    if (!output || !attacker || !definition ||
+        !g_weapon_hook_enabled.load(std::memory_order_acquire) ||
+        g_weapon_layout != &kSpWeaponLayout ||
+        reinterpret_cast<std::uintptr_t>(attacker)!=g_local_player_entity_address ||
+        !accessible_range(attacker,kSpWeaponLayout.gentity_size,false) ||
+        !accessible_range(static_cast<const std::byte*>(definition)+
+            kSpWeaponLayout.weapon_definition_type_offset,sizeof(std::int32_t),false))
+        return false;
+    std::int32_t entity_number=-1,weapon_type=-1;
+    std::uint32_t client{};
+    const auto* bytes=static_cast<const std::byte*>(attacker);
+    std::memcpy(&entity_number,bytes+kSpWeaponLayout.gentity_number_offset,4);
+    std::memcpy(&client,bytes+kSpWeaponLayout.gentity_client_offset,4);
+    std::memcpy(&weapon_type,static_cast<const std::byte*>(definition)+
+        kSpWeaponLayout.weapon_definition_type_offset,4);
+    RuntimeWeaponDefinitionIdentity identity{};
+    ControllerFrameSnapshot controller{};
+    if (entity_number!=0 || !client || weapon_type!=0 ||
+        !find_runtime_sp_weapon_definition(definition,&identity) ||
+        !server_impact_definition_identity_matches(
+            reinterpret_cast<std::uintptr_t>(definition),
+            identity.definition_address,identity.weapon_index) ||
+        !read_controller_frame(&controller) ||
+        !controller_frame_is_current(controller,GetTickCount64())) return false;
+    ServerImpactAuditIdentity result{};
+    result.accepted=true; result.weapon_index=identity.weapon_index;
+    std::memcpy(result.name.data(),identity.name.data(),
+        (std::min)(result.name.size()-1,identity.name.size()));
+    result.controller_generation=controller.generation;
+    result.right_grip=controller.frame.actions.hands[
+        static_cast<std::size_t>(wawvr::xr::Hand::Right)].squeeze.current;
+    result.left_grip=controller.frame.actions.hands[
+        static_cast<std::size_t>(wawvr::xr::Hand::Left)].squeeze.current;
+    *output=result; return true;
+}
+
+// Development evidence only: observe existing decisions, never supply one.
+// Generation/clock/analog changes are deliberately NOT transition keys, so a
+// steady render cannot produce a per-frame log stream. No source pose read is
+// performed unless the explicit diagnostic opt-in is present.
+enum class WeaponLifecycleFlag : unsigned {
+    hook, memory, broker, body_axis, current, views, focused,
+    right_published, left_published, right_raw, left_raw,
+    right_pose, left_pose, stable_right, raw_right, head_local,
+    applied_controller, attachment, applied_placement, active, refreshed,
+    retained, retired, native_called, right_reserved, left_reserved,
+    selected_ps_valid, definition_valid,
+};
+struct WeaponLifecycleObservation final {
+    bool enabled{};
+    std::uint64_t flags{}, generation{}, frame{}, action{}, published{}, age{};
+    std::int32_t draw{}, effective_draw{}, selected_ps{}, primary_ps{}, offhand_ps{};
+    std::uint32_t weap_flags{}, stage{}, post_stage{}, post_calls{};
+    std::uintptr_t player_state{}, rendered_player_state{}, dobj{};
+    bool ps_span_read{};
+    float right_squeeze{}, left_squeeze{};
+    void mark(const WeaponLifecycleFlag flag, const bool value=true) noexcept {
+        if (enabled && value) flags|=std::uint64_t{1}<<static_cast<unsigned>(flag);
+    }
+};
+thread_local WeaponLifecycleObservation* g_weapon_lifecycle_observation{};
+
+[[nodiscard]] bool weapon_lifecycle_diagnostics_enabled() noexcept {
+    static const bool enabled=[]() noexcept {
+        const auto error=GetLastError();
+        std::array<wchar_t,2> value{};
+        const bool requested=GetEnvironmentVariableW(
+            L"WAWVR_WEAPON_LIFECYCLE_DIAGNOSTICS",value.data(),
+            static_cast<DWORD>(value.size()))==1 && value[0]==L'1';
+        SetLastError(error);
+        return requested;
+    }();
+    return enabled;
+}
+
+void note_weapon_lifecycle_post_stage(const std::uint32_t stage) noexcept {
+    if (g_weapon_lifecycle_observation)
+        g_weapon_lifecycle_observation->post_stage=stage;
+}
+
+void observe_weapon_lifecycle(WeaponLifecycleObservation& value) noexcept {
+    if (!value.enabled) return;
+    const auto& grip=g_weapon_grip_state;
+    const std::uint64_t ownership=
+        (grip.right_latched?1ULL:0ULL)|(grip.left_latched?2ULL:0ULL)|
+        (grip.right_rearm_required?4ULL:0ULL)|(grip.left_rearm_required?8ULL:0ULL)|
+        (grip.right_tracking_unavailable?16ULL:0ULL)|
+        (grip.left_tracking_unavailable?32ULL:0ULL)|
+        (value.right_squeeze>=kWeaponGripEngage?64ULL:0ULL)|
+        (value.left_squeeze>=kWeaponGripEngage?128ULL:0ULL);
+    const std::array<std::uint64_t,12> key{
+        value.flags,ownership,grip.weapon_identity,
+        g_committed_weapon_grip.weapon_identity,
+        static_cast<unsigned>(grip.mode),
+        static_cast<unsigned>(g_committed_weapon_grip.mode),
+        static_cast<std::uint32_t>(value.draw),
+        static_cast<std::uint32_t>(value.effective_draw),
+        (static_cast<std::uint64_t>(value.weap_flags)<<32)|
+            static_cast<std::uint32_t>(value.selected_ps),
+        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(value.primary_ps))<<32)|
+            static_cast<std::uint32_t>(value.offhand_ps),
+        (static_cast<std::uint64_t>(value.stage)<<32)|value.post_stage,
+        (value.ps_span_read?1ULL:0ULL)|
+            (value.rendered_player_state!=value.player_state?2ULL:0ULL)};
+    static thread_local bool seen=false,limit_logged=false;
+    static thread_local std::array<std::uint64_t,12> previous{};
+    static thread_local std::uint32_t changes=0;
+    if (seen && key==previous) return;
+    seen=true; previous=key;
+    if (changes>=128) {
+        if (!limit_logged) {
+            limit_logged=true;
+            stereo_diagnostic_log("WeaponLifecycleDiag limit transitions=128 observationOnly=1 subsequentTransitionsNotRecorded=1");
+        }
+        return;
+    }
+    const auto serial=++changes;
+    const auto bit=[&](const WeaponLifecycleFlag flag) noexcept -> unsigned {
+        return (value.flags&(std::uint64_t{1}<<static_cast<unsigned>(flag)))?1U:0U;
+    };
+    stereo_diagnostic_log(
+        "WeaponLifecycleDiag state serial=%u stage=%u lastPostStage=%u postCalls=%u flags=%llX draw=%d effectiveDraw=%d originalPs=%08X renderedPs=%08X psSpanRead=%u weapFlags=%08X primaryPs=%d offhandPs=%d selectedPs=%d selectedValid=%u definitionValid=%u desiredMode=%u committedMode=%u desiredIdentity=%llu committedIdentity=%llu ownershipBits=%02llX active=%u refreshed=%u retired=%u nativeCalled=%u observationOnly=1",
+        serial,value.stage,value.post_stage,value.post_calls,
+        static_cast<unsigned long long>(value.flags),value.draw,value.effective_draw,
+        static_cast<unsigned>(value.player_state),
+        static_cast<unsigned>(value.rendered_player_state),value.ps_span_read?1U:0U,
+        value.weap_flags,value.primary_ps,value.offhand_ps,value.selected_ps,
+        bit(WeaponLifecycleFlag::selected_ps_valid),bit(WeaponLifecycleFlag::definition_valid),
+        static_cast<unsigned>(grip.mode),static_cast<unsigned>(g_committed_weapon_grip.mode),
+        static_cast<unsigned long long>(grip.weapon_identity),
+        static_cast<unsigned long long>(g_committed_weapon_grip.weapon_identity),
+        static_cast<unsigned long long>(ownership),bit(WeaponLifecycleFlag::active),
+        bit(WeaponLifecycleFlag::refreshed),bit(WeaponLifecycleFlag::retired),
+        bit(WeaponLifecycleFlag::native_called));
+    stereo_diagnostic_log(
+        "WeaponLifecycleDiag source serial=%u generation=%llu frame=%llu action=%llu publishedMs=%llu ageMs=%llu broker=%u current=%u views=%u focused=%u bodyAxis=%u headLocal=%u rightPublished=%u leftPublished=%u rightRaw=%u leftRaw=%u rightPose=%u leftPose=%u stableRight=%u rawRight=%u appliedController=%u attachment=%u appliedPlacement=%u rightReserved=%u leftReserved=%u rightSqueeze=%.3f leftSqueeze=%.3f lastDobj=%08X observationOnly=1",
+        serial,static_cast<unsigned long long>(value.generation),
+        static_cast<unsigned long long>(value.frame),static_cast<unsigned long long>(value.action),
+        static_cast<unsigned long long>(value.published),static_cast<unsigned long long>(value.age),
+        bit(WeaponLifecycleFlag::broker),bit(WeaponLifecycleFlag::current),
+        bit(WeaponLifecycleFlag::views),bit(WeaponLifecycleFlag::focused),
+        bit(WeaponLifecycleFlag::body_axis),bit(WeaponLifecycleFlag::head_local),
+        bit(WeaponLifecycleFlag::right_published),bit(WeaponLifecycleFlag::left_published),
+        bit(WeaponLifecycleFlag::right_raw),bit(WeaponLifecycleFlag::left_raw),
+        bit(WeaponLifecycleFlag::right_pose),bit(WeaponLifecycleFlag::left_pose),
+        bit(WeaponLifecycleFlag::stable_right),bit(WeaponLifecycleFlag::raw_right),
+        bit(WeaponLifecycleFlag::applied_controller),bit(WeaponLifecycleFlag::attachment),
+        bit(WeaponLifecycleFlag::applied_placement),bit(WeaponLifecycleFlag::right_reserved),
+        bit(WeaponLifecycleFlag::left_reserved),value.right_squeeze,value.left_squeeze,
+        static_cast<unsigned>(value.dobj));
 }
 
 }  // namespace
@@ -3163,6 +3418,28 @@ extern "C" void __cdecl wawvr_log_mosin_client_bullet_trace(
     const BoltActionWeaponProfile* const profile =
         profile_from_weapon_definition(
             static_cast<std::uint32_t>(definition_address), &identity);
+    if (gameplay_audit_enabled() && identity.weapon_index > 0) {
+        ClientBulletFireParams audit_params{};
+        std::memcpy(&audit_params, bullet_fire_params, sizeof(audit_params));
+        static std::atomic<std::uint32_t> audit_trace_logs{0};
+        const auto index = audit_params.ignore_entity_index == 0
+            ? audit_trace_logs.fetch_add(1, std::memory_order_relaxed) : 2048U;
+        if (index < 2048) {
+            ClientBulletTraceResults audit_results{};
+            std::memcpy(&audit_results, trace_results, sizeof(audit_results));
+            stereo_diagnostic_log(
+                "GameplayAimTrace sample=%u name=%s weapon=%d hit=%u start=%.5f,%.5f,%.5f end=%.5f,%.5f,%.5f direction=%.7f,%.7f,%.7f impact=%.5f,%.5f,%.5f fraction=%.7f startSolid=%u allSolid=%u evidence=client-predicted-native-trace ignoreEntity=0",
+                index, identity.name.data(), identity.weapon_index,
+                trace_hit & 0xFFU,
+                audit_params.start.x, audit_params.start.y, audit_params.start.z,
+                audit_params.end.x, audit_params.end.y, audit_params.end.z,
+                audit_params.direction.x, audit_params.direction.y, audit_params.direction.z,
+                audit_results.hit_position.x, audit_results.hit_position.y, audit_results.hit_position.z,
+                audit_results.trace.fraction,
+                static_cast<unsigned>(audit_results.trace.start_solid),
+                static_cast<unsigned>(audit_results.trace.all_solid));
+        }
+    }
     if (profile == nullptr ||
         profile->id != BoltActionWeaponProfileId::Mosin ||
         !profile->direct_ballistic_basis) {
@@ -3213,13 +3490,13 @@ extern "C" void __cdecl wawvr_log_mosin_client_impact_selector(
     const std::uint32_t target_entity,
     const std::uint32_t effect_gate_contents) noexcept {
     // Every selector arrival invalidates any unconsumed correlation from an
-    // earlier impact on this same game thread, including non-Mosin impacts.
-    g_mosin_impact_correlation = {};
+    // earlier impact on this same game thread, including unsupported impacts.
+    g_observed_impact_correlation = {};
 
     // Retail passes the map-local weapon index in the selector's custom EAX
     // contract. The post-call outer frame retains that uint32 at A+0x7C; it is
     // not a WeaponDef pointer. Resolve the definition through the pinned SP
-    // weapon table before applying the exact-Mosin filter.
+    // weapon table before applying the exact canonical diagnostic filter.
     const bool runtime_ready = local_client_number == 0 &&
         g_weapon_hook_enabled.load(std::memory_order_acquire) &&
         g_weapon_layout == &kSpWeaponLayout;
@@ -3235,23 +3512,35 @@ extern "C" void __cdecl wawvr_log_mosin_client_impact_selector(
         : nullptr;
     const bool profile_is_mosin = profile != nullptr &&
         profile->id == BoltActionWeaponProfileId::Mosin;
+    const auto name_end = std::find(
+        identity.name.begin(), identity.name.end(), '\0');
+    const auto diagnostic_identity = identity_resolved
+        ? impact_diagnostic_identity(std::string_view{
+              identity.name.data(),
+              static_cast<std::size_t>(name_end - identity.name.begin())})
+        : ImpactDiagnosticIdentity{};
+    const bool observed_profile =
+        diagnostic_identity.profile == ImpactDiagnosticProfile::Garand ||
+        (diagnostic_identity.profile == ImpactDiagnosticProfile::Mosin &&
+         profile_is_mosin);
 
     // Keep raw ABI/identity failures observable instead of silently losing the
-    // same diagnostic again. This cap is independent of the exact-Mosin pair
-    // cap below, so unrelated impacts cannot suppress detailed Mosin records.
+    // same diagnostic again. This generic cap is independent of both exact
+    // profile caps below, so unrelated impacts cannot suppress their records.
     static std::atomic<std::uint32_t> selector_arrivals{0};
     const std::uint32_t arrival_sequence =
         selector_arrivals.fetch_add(1, std::memory_order_relaxed);
     if (arrival_sequence < 24) {
         stereo_diagnostic_log(
-            "WeaponImpactDiag selector-arrival[%u] rawWeaponIndex=%u identityResolved=%d profileMosin=%d resolvedWeapon=%d weaponDef=0x%08X runtimeReady=%d",
+            "WeaponImpactDiag selector-arrival[%u] rawWeaponIndex=%u identityResolved=%d profileMosin=%d resolvedWeapon=%d weaponDef=0x%08X runtimeReady=%d name=%s observedProfile=%d",
             arrival_sequence, weapon_index, identity_resolved ? 1 : 0,
             profile_is_mosin ? 1 : 0,
             identity_resolved ? identity.weapon_index : 0,
             identity_resolved ? identity.definition_address : 0,
-            runtime_ready ? 1 : 0);
+            runtime_ready ? 1 : 0,
+            diagnostic_identity.name.data(), observed_profile ? 1 : 0);
     }
-    if (!profile_is_mosin) {
+    if (!observed_profile) {
         return;
     }
 
@@ -3297,17 +3586,19 @@ extern "C" void __cdecl wawvr_log_mosin_client_impact_selector(
         normal_length_squared > 1.0e-8F;
     const RetailMarkCounters counters = read_retail_mark_counters();
 
-    static std::atomic<std::uint32_t> mosin_impact_selectors{0};
+    static std::array<std::atomic<std::uint32_t>, 2> impact_selectors{};
     const std::uint32_t sequence =
-        mosin_impact_selectors.fetch_add(1, std::memory_order_relaxed);
+        impact_selectors[static_cast<std::size_t>(diagnostic_identity.profile)]
+            .fetch_add(1, std::memory_order_relaxed);
     if (sequence >= 24) {
         return;
     }
 
     const bool armed = selected_fx != 0 && position_readable && normal_valid;
     stereo_diagnostic_log(
-        "WeaponImpactDiag Mosin selector[%u] arrived=1 local=%u source=0x%08X rawWeaponIndex=%u weapon=%d weaponDef=0x%08X target=0x%08X surf=%u impactFlags=0x%08X contents=0x%08X pos=%.3f %.3f %.3f normal=%.6f %.6f %.6f normalReadable=%d normalFinite=%d normalLenSq=%.6f selectedFx=0x%08X selectedSound=0x%08X armed=%d marksValid=%d noMarks=%u allocated=%u freed=%u",
-        sequence, local_client_number, source_entity,
+        "WeaponImpactDiag %s selector[%u] name=%s arrived=1 local=%u source=0x%08X rawWeaponIndex=%u weapon=%d weaponDef=0x%08X target=0x%08X surf=%u impactFlags=0x%08X contents=0x%08X pos=%.3f %.3f %.3f normal=%.6f %.6f %.6f normalReadable=%d normalFinite=%d normalLenSq=%.6f selectedFx=0x%08X selectedSound=0x%08X armed=%d marksValid=%d noMarks=%u allocated=%u freed=%u",
+        impact_diagnostic_label(diagnostic_identity.profile), sequence,
+        diagnostic_identity.name.data(), local_client_number, source_entity,
         weapon_index, identity.weapon_index, identity.definition_address,
         target_entity, surface_type, impact_flags, effect_gate_contents,
         stable_position.x, stable_position.y, stable_position.z,
@@ -3321,8 +3612,9 @@ extern "C" void __cdecl wawvr_log_mosin_client_impact_selector(
         return;
     }
 
-    g_mosin_impact_correlation = {
+    g_observed_impact_correlation = {
         .armed = true,
+        .identity = diagnostic_identity,
         .sequence = sequence,
         .local_client_number = local_client_number,
         .source_entity = source_entity,
@@ -3349,26 +3641,28 @@ extern "C" void __cdecl wawvr_log_mosin_client_impact_fx_spawn(
     const std::uint32_t returned_effect_handle) noexcept {
     const auto position_address = static_cast<std::uint32_t>(
         reinterpret_cast<std::uintptr_t>(position));
-    if (!g_mosin_impact_correlation.armed) {
+    if (!g_observed_impact_correlation.armed) {
         return;
     }
-    if (g_mosin_impact_correlation.weapon_index != weapon_index ||
-        g_mosin_impact_correlation.position_address != position_address) {
-        const MosinImpactCorrelation mismatch =
-            g_mosin_impact_correlation;
-        g_mosin_impact_correlation = {};
+    if (g_observed_impact_correlation.weapon_index != weapon_index ||
+        g_observed_impact_correlation.position_address != position_address) {
+        const ObservedImpactCorrelation mismatch =
+            g_observed_impact_correlation;
+        g_observed_impact_correlation = {};
         stereo_diagnostic_log(
-            "WeaponImpactDiag Mosin spawn[%u] correlated=0 mismatch=1 expectedWeaponIndex=%u actualWeaponIndex=%u expectedWeaponDef=0x%08X expectedPosition=0x%08X actualPosition=0x%08X returnedHandle=0x%08X",
-            mismatch.sequence, mismatch.weapon_index, weapon_index,
+            "WeaponImpactDiag %s spawn[%u] name=%s correlated=0 mismatch=1 expectedWeaponIndex=%u actualWeaponIndex=%u expectedWeaponDef=0x%08X expectedPosition=0x%08X actualPosition=0x%08X returnedHandle=0x%08X",
+            impact_diagnostic_label(mismatch.identity.profile),
+            mismatch.sequence, mismatch.identity.name.data(),
+            mismatch.weapon_index, weapon_index,
             mismatch.weapon_definition,
             mismatch.position_address, position_address,
             returned_effect_handle);
         return;
     }
 
-    const MosinImpactCorrelation correlation =
-        g_mosin_impact_correlation;
-    g_mosin_impact_correlation = {};
+    const ObservedImpactCorrelation correlation =
+        g_observed_impact_correlation;
+    g_observed_impact_correlation = {};
 
     wawvr::xr::Vec3f stable_position{};
     const bool position_readable = position != nullptr &&
@@ -3391,8 +3685,10 @@ extern "C" void __cdecl wawvr_log_mosin_client_impact_fx_spawn(
         : 0;
 
     stereo_diagnostic_log(
-        "WeaponImpactDiag Mosin spawn[%u] correlated=1 local=%u/%u source=0x%08X/0x%08X weaponIndex=%u weaponDef=0x%08X position=0x%08X positionUnchanged=%d selectedFx=0x%08X spawnFx=0x%08X selectorTarget=0x%08X spawnTarget=0x%08X gameTime=%u returnedHandle=0x%08X marksValid=%d noMarks=%u/%u allocated=%u/%u delta=%u freed=%u/%u delta=%u",
-        correlation.sequence, correlation.local_client_number,
+        "WeaponImpactDiag %s spawn[%u] name=%s correlated=1 local=%u/%u source=0x%08X/0x%08X weaponIndex=%u weaponDef=0x%08X position=0x%08X positionUnchanged=%d selectedFx=0x%08X spawnFx=0x%08X selectorTarget=0x%08X spawnTarget=0x%08X gameTime=%u returnedHandle=0x%08X marksValid=%d noMarks=%u/%u allocated=%u/%u delta=%u freed=%u/%u delta=%u",
+        impact_diagnostic_label(correlation.identity.profile),
+        correlation.sequence, correlation.identity.name.data(),
+        correlation.local_client_number,
         local_client_number, correlation.source_entity, source_entity,
         correlation.weapon_index, correlation.weapon_definition,
         correlation.position_address,
@@ -3642,6 +3938,7 @@ extern "C" void __cdecl wawvr_apply_physical_muzzle_from_bridge(
     // Clearing it before every attempt prevents an unrelated later rocket
     // from consuming stale local-player state.
     g_pending_player_bazooka_rocket = {};
+    clear_sight_audit_discharge_source();
     const bool hook_enabled =
         g_weapon_hook_enabled.load(std::memory_order_acquire);
     const WeaponExecutableLayout* const layout = g_weapon_layout;
@@ -3899,6 +4196,43 @@ extern "C" void __cdecl wawvr_apply_physical_muzzle_from_bridge(
     std::memcpy(
         weapon_bytes + layout->weapon_parms_muzzle_trace_offset,
         &physical_muzzle, sizeof(physical_muzzle));
+    if (weapon_type==0 && runtime_identity_valid && authoritative_basis_applied) {
+        arm_sight_audit_discharge_source({
+            .weapon_parms=reinterpret_cast<std::uintptr_t>(weapon_parms),
+            .definition=weapon_definition_address,
+            .weapon_index=identity.weapon_index,
+            .generation=controller.generation,
+            .source_generation=published_muzzle.controller_generation,
+            .source_published_ms=published_muzzle.publication_milliseconds,
+            .now_ms=now_milliseconds,
+            .source_pose_serial=published_muzzle.diagnostic_publication_serial,
+            .origin=physical_muzzle,
+            // WeaponParms stores native right, while the rendered snapshot
+            // uses IW left. Convert only this diagnostic copy.
+            .basis={corrected_forward,{-corrected_right.x,-corrected_right.y,
+                -corrected_right.z},corrected_up},
+        });
+    }
+    if (gameplay_audit_enabled() && weapon_type == 0) {
+        static std::atomic<std::uint32_t> audit_shot_logs{0};
+        const auto index = audit_shot_logs.fetch_add(1, std::memory_order_relaxed);
+        if (index < 2048) {
+            stereo_diagnostic_log(
+                "GameplayAimShot sample=%u name=%s weapon=%d generation=%llu sourceGeneration=%llu ageMs=%llu basisApplied=%d origin=%.5f,%.5f,%.5f forward=%.7f,%.7f,%.7f left=%.7f,%.7f,%.7f up=%.7f,%.7f,%.7f rightGrip=%.3f leftGrip=%.3f evidence=authoritative-native-fire-parameters",
+                index, runtime_identity_valid ? identity.name.data() : "unresolved",
+                identity.weapon_index,
+                static_cast<unsigned long long>(controller.generation),
+                static_cast<unsigned long long>(authoritative_source_generation),
+                static_cast<unsigned long long>(now_milliseconds - authoritative_publication_milliseconds),
+                authoritative_basis_applied ? 1 : 0,
+                physical_muzzle.x, physical_muzzle.y, physical_muzzle.z,
+                corrected_forward.x, corrected_forward.y, corrected_forward.z,
+                -corrected_right.x, -corrected_right.y, -corrected_right.z,
+                corrected_up.x, corrected_up.y, corrected_up.z,
+                controller.frame.actions.hands[static_cast<std::size_t>(wawvr::xr::Hand::Right)].squeeze.current,
+                controller.frame.actions.hands[static_cast<std::size_t>(wawvr::xr::Hand::Left)].squeeze.current);
+        }
+    }
     if (weapon_type == 0 ||
         (weapon_type == 2 && !bazooka_final_direction_route)) {
         static std::atomic<std::uint32_t> shot_basis_logs{0};
@@ -4217,6 +4551,7 @@ extern "C" void __cdecl wawvr_apply_fixed_ads_spread_from_bridge(
     // This exact FireWeapon -> Bullet_Fire call occurs once per discharge,
     // before any native pellet/impact work. Publish independently of ADS
     // spread or manual-reload policy; AI and dry-trigger paths cannot pass.
+    begin_server_impact_audit_shot(weapon_parms,attacker);
     if (reinterpret_cast<std::uintptr_t>(attacker) ==
             g_local_player_entity_address &&
         entity_number == 0 && client_address != 0 &&
@@ -4302,6 +4637,12 @@ extern "C" void __cdecl wawvr_apply_fixed_ads_spread_from_bridge(
 
 extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
     void* const viewmodel_dobj) noexcept {
+    if (g_weapon_lifecycle_observation) {
+        ++g_weapon_lifecycle_observation->post_calls;
+        g_weapon_lifecycle_observation->dobj=
+            reinterpret_cast<std::uintptr_t>(viewmodel_dobj);
+        note_weapon_lifecycle_post_stage(1);
+    }
     ScopedPerformanceTiming post_update_timing(
         PerformanceTimingPhase::weapon_post_update_custom);
     ActiveWeaponPoseContext context = g_active_weapon_pose;
@@ -4384,6 +4725,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
         update_manual_reload_viewmodel(nullptr, nullptr, {});
         return;
     }
+    note_weapon_lifecycle_post_stage(2);
 
     const ViewmodelFilterStatus filter_status =
         hide_t4_viewmodel_hand_surfaces(
@@ -4415,6 +4757,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
         update_manual_reload_viewmodel(nullptr, nullptr, {});
         return;
     }
+    note_weapon_lifecycle_post_stage(3);
 
     wawvr::xr::Vec3f grip_tag_world{};
     const char* selected_tag_name = nullptr;
@@ -4442,6 +4785,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
         update_manual_reload_viewmodel(nullptr, nullptr, {});
         return;
     }
+    note_weapon_lifecycle_post_stage(4);
 
     wawvr::xr::Vec3f original_origin{};
     std::memcpy(
@@ -4672,6 +5016,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
             return false;
         };
     if (context.grip_mode == WeaponGripMode::Chest) {
+        note_weapon_lifecycle_post_stage(5);
         wawvr::xr::Vec3f corrected_origin = original_origin;
         bool anchored = align_viewmodel_origin_to_grip(
             context.tracked_grip_world, grip_tag_world, &corrected_origin);
@@ -4735,6 +5080,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
         return;
     }
     held_breakdown_checkpoint(0);
+    note_weapon_lifecycle_post_stage(6);
     // Match COD4's fixed controller attachment contract. A new owner aligns
     // the evaluated grip tag and captures that result exactly once. The
     // pair-to-left bolt-work handoff already transferred the exact visible
@@ -4880,6 +5226,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
             "WeaponDiag post-T4 controller attachment recapture failed; pose transition remains pending");
         return;
     }
+    note_weapon_lifecycle_post_stage(7);
     const bool transition_still_desired =
         g_weapon_grip_state.weapon_identity == context.weapon_identity &&
         g_weapon_grip_state.mode == context.grip_mode;
@@ -4894,6 +5241,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
         return;
     }
     if (!context.transition_pending || transition_still_desired) {
+        note_weapon_lifecycle_post_stage(8);
         if (recapture_attachment_after_post) {
             *committed_attachment = post_attachment;
         }
@@ -4961,6 +5309,7 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
     }
     if ((!context.transition_pending || transition_still_desired) &&
         context.refresh_retained_pose) {
+        note_weapon_lifecycle_post_stage(9);
         g_retained_weapon_pose = {
             .valid = true,
             .weapon_identity = context.weapon_identity,
@@ -5265,6 +5614,8 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
     // read back a possibly stale global publication during a weapon change.
     wawvr::xr::Basis3f evaluated_projectile_basis{};
     bool evaluated_projectile_basis_valid = false;
+    std::uint64_t sight_muzzle_publication_milliseconds{};
+    std::uint64_t sight_muzzle_publication_serial{};
     if (muzzle_tag_available) {
         wawvr::xr::Basis3f weapon_root_basis{};
         std::uint8_t weapon_root_bone_index = 0;
@@ -5287,6 +5638,72 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
                 .up = {
                     flash_matrix[6], flash_matrix[7], flash_matrix[8]},
             };
+            wawvr::xr::Basis3f calibrated_rifle_basis{};
+            CalibratedRifleProof calibrated_rifle_proof{};
+            bool calibrated_rifle_valid=false;
+            if (g_weapon_layout==&kSpWeaponLayout&&context.manual_reload.weapon_definition_valid&&
+                (std::string_view(context.manual_reload.weapon_internal_name.data())=="m1garand"||
+                 std::string_view(context.manual_reload.weapon_internal_name.data())=="mosin_rifle")) {
+                const auto read_native=[](void*,std::uintptr_t address,void* output,std::size_t size) noexcept {
+                    if (!output||!accessible_range(reinterpret_cast<const void*>(address),size,false)) return false;
+                    std::memcpy(output,reinterpret_cast<const void*>(address),size); return true;
+                };
+                calibrated_rifle_valid=derive_calibrated_rifle_basis({nullptr,read_native},
+                    {context.manual_reload.weapon_definition_address,
+                     static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(viewmodel_dobj)),
+                     context.manual_reload.weapon_internal_name.data(),raw_flash_basis},
+                    &calibrated_rifle_basis,&calibrated_rifle_proof)==CalibratedRifleStatus::accepted;
+            }
+            wawvr::xr::Basis3f calibrated_pistol_basis{};
+            bool calibrated_pistol_valid=false;
+            if (g_weapon_layout==&kSpWeaponLayout&&context.manual_reload.weapon_definition_valid&&
+                std::string_view(context.manual_reload.weapon_internal_name.data())=="zombie_colt") {
+                const bool disabled=colt_sight_alignment_disabled_by_environment();
+                static std::atomic_flag policy_reported=ATOMIC_FLAG_INIT;
+                stereo_diagnostic_log_once(policy_reported,
+                    "WeaponDiag Colt sight policy exactWeapon=zombie_colt disabledForMeasurement=%u startupOnly=1 otherProfilesUnchanged=1",
+                    disabled?1U:0U);
+                if (!disabled||sight_audit_enabled()) {
+                    const auto read_native=[](void*,std::uintptr_t address,void* output,std::size_t size) noexcept {
+                        if (!output||!accessible_range(reinterpret_cast<const void*>(address),size,false)) return false;
+                        std::memcpy(output,reinterpret_cast<const void*>(address),size); return true;
+                    };
+                    CalibratedPistolRequest pistol_request{
+                         context.manual_reload.weapon_definition_address,
+                         static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(viewmodel_dobj)),
+                         context.manual_reload.weapon_internal_name.data(),raw_flash_basis,
+                         context.controller_generation,context.controller_publication_milliseconds,GetTickCount64()};
+                    // j_bolt is a sibling of tag_flash. Resolve its CURRENT
+                    // matrix explicitly; a cached calculated bit alone cannot
+                    // prove that this independent slide was evaluated here.
+                    std::array<float,9> sight_matrix{};
+                    wawvr::xr::Vec3f sight_position{};
+                    std::uint16_t sight_tag{};
+                    if (g_cg_dobj_get_world_tag_matrix!=0&&
+                        resolve_t4_script_string("j_bolt",&sight_tag)&&
+                        wawvr_call_dobj_get_world_tag_matrix(viewmodel_dobj,sight_tag,
+                            reinterpret_cast<const void*>(g_viewmodel_pose_address),
+                            sight_matrix.data(),&sight_position)!=0) {
+                        pistol_request.evaluated_sight_basis={
+                            {sight_matrix[0],sight_matrix[1],sight_matrix[2]},
+                            {sight_matrix[3],sight_matrix[4],sight_matrix[5]},
+                            {sight_matrix[6],sight_matrix[7],sight_matrix[8]}};
+                        pistol_request.evaluated_sight_basis_valid=true;
+                        pistol_request.resolved_sight_tag=sight_tag;
+                    }
+                    pistol_request.now_milliseconds=GetTickCount64();
+                    const auto status=derive_calibrated_pistol_basis({nullptr,read_native},pistol_request,
+                        &calibrated_pistol_basis);
+                    calibrated_pistol_valid=!disabled&&status==CalibratedPistolStatus::accepted;
+                    static std::atomic<std::uint32_t> reported_statuses{};
+                    const auto bit=1U<<static_cast<unsigned>(status);
+                    if (!(reported_statuses.fetch_or(bit,std::memory_order_relaxed)&bit))
+                        stereo_diagnostic_log(
+                            "WeaponDiag Colt sight witness status=%u accepted=%u applied=%u measurementOnly=%u muzzleUnchanged=1 otherProfilesUnchanged=1 rejectedWitnessNotZeroProof=1",
+                            static_cast<unsigned>(status),status==CalibratedPistolStatus::accepted?1U:0U,
+                            calibrated_pistol_valid?1U:0U,disabled?1U:0U);
+                }
+            }
             if (exact_bazooka_viewmodel && brass_tag_available) {
                 bazooka_geometry_basis_valid =
                     build_validated_physical_launcher_bore_basis(
@@ -5297,7 +5714,25 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
                         &bazooka_bore_length,
                         &bazooka_flash_alignment);
             }
-            if (exact_bazooka_viewmodel) {
+            if (calibrated_rifle_valid) {
+                // Only these exact native sight assets passed the small
+                // double-read geometry/bind witness. Never infer their bore
+                // from the off-axis hand-grip-to-muzzle segment.
+                evaluated_projectile_basis=calibrated_rifle_basis;
+                evaluated_projectile_basis_valid=true;
+                static std::array<std::atomic_flag,2> reported{};
+                const auto index=calibrated_rifle_proof.asset==CalibratedRifleAsset::garand?0U:1U;
+                stereo_diagnostic_log_once(reported[index],
+                    "WeaponDiag exact native sight-derived rifle basis name=%s witness=%016llX localF=%.8f,%.8f,%.8f rear=%.6f,%.6f,%.6f front=%.6f,%.6f,%.6f muzzleUnchanged=1 otherProfilesUnchanged=1",
+                    context.manual_reload.weapon_internal_name.data(),
+                    static_cast<unsigned long long>(calibrated_rifle_proof.witness_fingerprint),
+                    calibrated_rifle_proof.local_direction.x,calibrated_rifle_proof.local_direction.y,calibrated_rifle_proof.local_direction.z,
+                    calibrated_rifle_proof.rear_reference.x,calibrated_rifle_proof.rear_reference.y,calibrated_rifle_proof.rear_reference.z,
+                    calibrated_rifle_proof.front_reference.x,calibrated_rifle_proof.front_reference.y,calibrated_rifle_proof.front_reference.z);
+            } else if (calibrated_pistol_valid) {
+                evaluated_projectile_basis=calibrated_pistol_basis;
+                evaluated_projectile_basis_valid=true;
+            } else if (exact_bazooka_viewmodel) {
                 // A malformed or unavailable rear tag must not make the
                 // complete physical-launcher path disappear. tag_flash row
                 // zero is the audited IW forward axis and remains the atomic
@@ -5379,12 +5814,13 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
         const bool validated_launcher_root = weapon_root_basis_valid &&
             (!launcher_profile->use_rigid_tube_axis ||
              bazooka_geometry_basis_valid);
-        publish_muzzle(
+        sight_muzzle_publication_milliseconds=publish_muzzle(
             context.controller_generation, muzzle_world,
             evaluated_projectile_basis_valid
                 ? &evaluated_projectile_basis
                 : nullptr,
-            validated_launcher_root ? &weapon_root_basis : nullptr);
+            validated_launcher_root ? &weapon_root_basis : nullptr,
+            &sight_muzzle_publication_serial);
         context.manual_reload.muzzle_world = muzzle_world;
         context.manual_reload.muzzle_valid = true;
         WAWVR_STEREO_DIAG_ONCE(
@@ -5553,8 +5989,71 @@ extern "C" void __cdecl wawvr_post_update_viewmodel_pose(
         viewmodel_dobj,
         reinterpret_cast<const void*>(g_viewmodel_pose_address),
         context.manual_reload);
+    if (sight_audit_enabled() && g_weapon_layout==&kSpWeaponLayout &&
+        context.manual_reload.weapon_definition_valid &&
+        (std::string_view(context.manual_reload.weapon_internal_name.data())=="m1garand"||
+         std::string_view(context.manual_reload.weapon_internal_name.data())=="mosin_rifle"||
+         std::string_view(context.manual_reload.weapon_internal_name.data())=="svt40"||
+         std::string_view(context.manual_reload.weapon_internal_name.data())=="zombie_colt") &&
+        sight_muzzle_publication_milliseconds && evaluated_projectile_basis_valid) {
+        SightAuditMetadata sight{};
+        sight.asset=std::string_view(context.manual_reload.weapon_internal_name.data())=="mosin_rifle"
+            ? SightAuditAsset::mosin : std::string_view(context.manual_reload.weapon_internal_name.data())=="svt40"
+                ? SightAuditAsset::svt : std::string_view(context.manual_reload.weapon_internal_name.data())=="zombie_colt"
+                    ? SightAuditAsset::colt : SightAuditAsset::garand;
+        sight.definition=context.manual_reload.weapon_definition_address;
+        sight.dobj=static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(viewmodel_dobj));
+        sight.weapon_index=context.manual_reload.weapon_index;
+        sight.generation=context.controller_generation;
+        sight.controller_published_ms=context.controller_publication_milliseconds;
+        sight.pose_published_ms=sight_muzzle_publication_milliseconds;
+        sight.pose_serial=sight_muzzle_publication_serial;
+        sight.frame_id=hands.controller.frame.frame_id;
+        sight.action_sequence=hands.controller.frame.actions.sequence;
+        sight.predicted_display_time=hands.controller.frame.predicted_display_time;
+        sight.captured_ms=GetTickCount64();
+        sight.tracking_evidence=(hands.valid?1U:0U)|(context.refresh_retained_pose?2U:0U)|
+            (hands.controller.generation==context.controller_generation?4U:0U)|
+            (hands.controller.publication_milliseconds==context.controller_publication_milliseconds?8U:0U)|
+            (hands.controller.frame.actions.focused?16U:0U)|(hands.controller.frame.views_valid?32U:0U);
+        sight.tracked_live=sight.tracking_evidence==kRequiredSightTrackingEvidence;
+        sight.transition_pending=context.transition_pending;
+        sight.grip_mode=static_cast<std::uint32_t>(context.grip_mode);
+        const auto& right=hands.controller.frame.actions.hands[static_cast<std::size_t>(wawvr::xr::Hand::Right)];
+        const auto& left=hands.controller.frame.actions.hands[static_cast<std::size_t>(wawvr::xr::Hand::Left)];
+        sight.right_grip=right.squeeze.current; sight.left_grip=left.squeeze.current;
+        sight.right_trigger=right.trigger.current; sight.trigger_active=right.trigger.active;
+        sight.trigger_changed=right.trigger.changed;
+        sight.trigger_click_active=right.trigger_click.active;
+        sight.trigger_click=right.trigger_click.current;
+        sight.trigger_click_changed=right.trigger_click.changed;
+        sight.head=hands.controller.frame.head_center;
+        sight.right_hand=right.grip.pose; sight.left_hand=left.grip.pose;
+        const auto sight_head_relative=wawvr::xr::OpenXrPoseToIwRelative(
+            hands.controller.frame.head_center,hands.controller.tracking_anchor,wawvr::xr::kIwUnitsPerMeter);
+        sight.head_world_forward=compose_post_t4_diagnostic_vector(context.camera_axis,sight_head_relative.axis.forward);
+        const auto sight_head_offset=compose_post_t4_diagnostic_vector(context.camera_axis,sight_head_relative.position);
+        sight.head_world_origin={context.camera_origin.x+sight_head_offset.x,
+            context.camera_origin.y+sight_head_offset.y,context.camera_origin.z+sight_head_offset.z};
+        sight.parent_camera_origin=context.camera_origin; sight.parent_camera_basis=context.camera_axis;
+        sight.grip_world=grip_tag_world; sight.muzzle=muzzle_world;
+        sight.projectile_basis=evaluated_projectile_basis;
+        if (selected_tag_name) {
+            const auto length=(std::min)(std::strlen(selected_tag_name),sight.grip_tag.size()-1);
+            std::memcpy(sight.grip_tag.data(),selected_tag_name,length);
+        }
+        const auto* player=static_cast<const std::byte*>(context.manual_reload.player_state);
+        if (accessible_range(player,0x110,false)) {
+            std::memcpy(&sight.weapon_time,player+0x40,4);
+            std::memcpy(&sight.weapon_delay,player+0x44,4);
+            std::memcpy(&sight.weapon_state,player+0x108,4);
+            std::memcpy(&sight.shot_count,player+0x10C,4);
+            publish_rendered_sight_audit(sight);
+        }
+    }
     held_breakdown_checkpoint(5);
     publish_held_breakdown();
+    note_weapon_lifecycle_post_stage(10);
 }
 
 extern "C" void __cdecl wawvr_add_player_weapon_bridge(
@@ -5563,12 +6062,17 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
     const void* const player_state,
     void* const centity,
     const std::int32_t draw_gun) noexcept {
+    WeaponLifecycleObservation lifecycle{};
+    lifecycle.enabled=weapon_lifecycle_diagnostics_enabled();
+    lifecycle.draw=draw_gun;
+    lifecycle.player_state=reinterpret_cast<std::uintptr_t>(player_state);
     ScopedPerformanceTiming weapon_bridge_timing(
         weapon_bridge_timing_phase(g_committed_weapon_grip.mode));
     const ActiveWeaponPoseContext previous_context = g_active_weapon_pose;
     const ActiveHandsContext previous_hands = g_active_hands;
     g_active_weapon_pose = {};
     g_active_hands = {};
+    publish_vr_gameplay_prompt_weapon({},false,false,false);
     manual_grenade_observe_player_state(player_state);
     std::array<std::byte, kSpPlayerStateViewmodelPrefixSpan>
         player_state_viewmodel_shadow{};
@@ -5600,6 +6104,16 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
     }
     const bool hook_enabled =
         g_weapon_hook_enabled.load(std::memory_order_acquire);
+    lifecycle.mark(WeaponLifecycleFlag::hook,hook_enabled);
+    lifecycle.rendered_player_state=reinterpret_cast<std::uintptr_t>(rendered_player_state);
+    if (lifecycle.enabled && active_layout_for_render==&kSpWeaponLayout &&
+        accessible_range(rendered_player_state,0x108,false)) {
+        const auto* bytes=static_cast<const std::byte*>(rendered_player_state);
+        lifecycle.ps_span_read=true;
+        std::memcpy(&lifecycle.weap_flags,bytes+0x10,4);
+        std::memcpy(&lifecycle.offhand_ps,bytes+0xFC,4);
+        std::memcpy(&lifecycle.primary_ps,bytes+0x104,4);
+    }
     if (hook_enabled) {
         // A weapon switch, hidden model, or failed tag evaluation must not
         // leave the previous model's muzzle eligible for another shot.
@@ -5619,8 +6133,36 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
         accessible_range(
             reinterpret_cast<const void*>(g_cgame_gun_yaw_address),
             sizeof(float), true)) {
+        lifecycle.stage=1;
+        lifecycle.mark(WeaponLifecycleFlag::memory);
         ControllerFrameSnapshot snapshot{};
         if (read_controller_frame(&snapshot)) {
+            if (lifecycle.enabled) {
+                lifecycle.stage=2;
+                lifecycle.mark(WeaponLifecycleFlag::broker);
+                lifecycle.generation=snapshot.generation;
+                lifecycle.frame=snapshot.frame.frame_id;
+                lifecycle.action=snapshot.frame.actions.sequence;
+                lifecycle.published=snapshot.publication_milliseconds;
+                const auto now=GetTickCount64();
+                lifecycle.age=now>=snapshot.publication_milliseconds
+                    ? now-snapshot.publication_milliseconds
+                    : (std::numeric_limits<std::uint64_t>::max)();
+                lifecycle.mark(WeaponLifecycleFlag::current,
+                    controller_frame_is_current(snapshot,now));
+                lifecycle.mark(WeaponLifecycleFlag::views,snapshot.frame.views_valid);
+                lifecycle.mark(WeaponLifecycleFlag::focused,snapshot.frame.actions.focused);
+                const auto r=static_cast<std::size_t>(wawvr::xr::Hand::Right);
+                const auto l=static_cast<std::size_t>(wawvr::xr::Hand::Left);
+                lifecycle.mark(WeaponLifecycleFlag::right_published,snapshot.weapon_poses[r].valid);
+                lifecycle.mark(WeaponLifecycleFlag::left_published,snapshot.weapon_poses[l].valid);
+                lifecycle.mark(WeaponLifecycleFlag::right_raw,
+                    hand_weapon_pose_usable(snapshot.frame.actions.hands[r]));
+                lifecycle.mark(WeaponLifecycleFlag::left_raw,
+                    hand_weapon_pose_usable(snapshot.frame.actions.hands[l]));
+                lifecycle.right_squeeze=snapshot.frame.actions.hands[r].squeeze.current;
+                lifecycle.left_squeeze=snapshot.frame.actions.hands[l].squeeze.current;
+            }
             if (!g_weapon_attachment_anchor_valid) {
                 g_weapon_attachment_anchor = snapshot.tracking_anchor;
                 g_weapon_attachment_anchor_valid = true;
@@ -5653,6 +6195,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
             wawvr::xr::Basis3f body_axis{};
             const bool body_axis_valid =
                 gravity_level_t4_camera_axis(camera_axis, &body_axis);
+            lifecycle.mark(WeaponLifecycleFlag::body_axis,body_axis_valid);
             if (body_axis_valid) {
                 camera_axis = body_axis;
             }
@@ -5681,6 +6224,10 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                 read_runtime_sp_weapon_definition_snapshot(
                     current_sp_weapon_index,
                     &current_weapon_runtime_identity);
+            lifecycle.stage=3;
+            lifecycle.selected_ps=current_sp_weapon_index;
+            lifecycle.mark(WeaponLifecycleFlag::selected_ps_valid,current_sp_weapon_valid);
+            lifecycle.mark(WeaponLifecycleFlag::definition_valid,current_weapon_runtime_identity_valid);
             observe_headset_svt40_weapon_identity(
                 current_weapon_runtime_identity.name,
                 current_weapon_runtime_identity_valid);
@@ -5715,11 +6262,34 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                     static_cast<std::uint32_t>(wawvr::xr::Hand::Right)];
                 const auto& left = actions.hands[
                     static_cast<std::uint32_t>(wawvr::xr::Hand::Left)];
+                const UnheldControllerPublicationRecovery publication_recovery{
+                    .current_weapon_available=current_sp_weapon_valid,
+                    .committed_chest=g_committed_weapon_grip.mode==WeaponGripMode::Chest,
+                    .retained_controller_owner=g_retained_weapon_pose.valid &&
+                        g_retained_weapon_pose.grip_mode!=WeaponGripMode::Chest,
+                    .nested_controller_owner=previous_context.valid &&
+                        previous_context.grip_mode!=WeaponGripMode::Chest,
+                };
+                for (const auto hand:{wawvr::xr::Hand::Right,wawvr::xr::Hand::Left}) {
+                    const bool recovered=recover_unheld_controller_publication(
+                        publication_recovery,snapshot.generation,hand,now_milliseconds);
+                    static thread_local unsigned recovery_logs=0;
+                    if (recovered && lifecycle.enabled && recovery_logs<16) {
+                        ++recovery_logs;
+                        stereo_diagnostic_log(
+                            "WeaponLifecycleDiag unheld-publication recovery: hand=%u generation=%llu currentFrameUnchanged=1 nextPublisherMustReseed=1 heldThresholdsUnchanged=1",
+                            static_cast<unsigned>(hand),
+                            static_cast<unsigned long long>(snapshot.generation));
+                    }
+                }
                 // Both grip reservations belong to this one synchronous
                 // decision. Share its fresh identity read, not a receipt
                 // retained across the later native pose/render callbacks.
                 const auto reload_policy = read_manual_reload_gameplay_policy(
                     current_sp_weapon_valid ? current_sp_weapon_index : 0);
+                lifecycle.mark(WeaponLifecycleFlag::right_reserved,reload_policy.reserves_right_grip);
+                lifecycle.mark(WeaponLifecycleFlag::left_reserved,
+                    reload_policy.reserves_left_grip);
                 grip_update = update_weapon_grip(
                     {
                         .enabled = true,
@@ -5764,6 +6334,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
 
             const bool weapon_changed =
                 prior_weapon_identity != current_weapon_identity;
+            lifecycle.stage=4;
             if (weapon_changed ||
                 g_committed_weapon_grip.weapon_identity !=
                     current_weapon_identity) {
@@ -5853,6 +6424,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                     compose_snapshot_head_world_pose(
                         snapshot, camera_origin, camera_axis,
                         &current_head_world);
+                lifecycle.mark(WeaponLifecycleFlag::head_local,current_head_local_controller_path);
                 const wawvr::xr::Vec3f controller_camera_origin =
                     current_head_local_controller_path
                     ? current_head_world.position : camera_origin;
@@ -5897,6 +6469,9 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                     : published_controller_weapon_pose(
                           snapshot, wawvr::xr::Hand::Left,
                           now_milliseconds, &left_controller);
+                lifecycle.stage=5;
+                lifecycle.mark(WeaponLifecycleFlag::right_pose,right_pose_ready);
+                lifecycle.mark(WeaponLifecycleFlag::left_pose,left_pose_ready);
 
                 // One-hand placement remains in its established render frame.
                 // The two-hand state machines instead consume a separate pair
@@ -5921,6 +6496,8 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                     controller_weapon_pose(
                         snapshot, wawvr::xr::Hand::Left,
                         now_milliseconds, &raw_left_controller);
+                lifecycle.mark(WeaponLifecycleFlag::stable_right,stable_right_pose_ready);
+                lifecycle.mark(WeaponLifecycleFlag::raw_right,raw_right_pose_ready);
 
                 // Preserve the stable right-controller ray as the rigid weapon
                 // baseline. The raw same-frame hand delta cancels common
@@ -6137,6 +6714,11 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                                     current_sp_command_time_valid,
                             };
                         }
+                        publish_vr_gameplay_prompt_weapon(
+                            std::string_view(manual_reload.weapon_internal_name.data()),
+                            manual_reload.weapon_definition_valid,
+                            manual_reload.right_rifle_gripped,
+                            manual_reload.left_rifle_gripped);
                         g_active_weapon_pose = {
                             .valid = true,
                             .grip_mode = applied_mode,
@@ -6368,12 +6950,16 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                     applied_mode == grip_update.mode
                     ? grip_update.support_pose
                     : outgoing_support_pose;
+                lifecycle.mark(WeaponLifecycleFlag::applied_controller,applied_controller_ready);
+                lifecycle.mark(WeaponLifecycleFlag::attachment,placement_attachment!=nullptr);
                 if (applied_controller_ready &&
                     placement_attachment != nullptr &&
                     apply_controller_weapon_placement(
                         controller_camera_origin, controller_camera_axis,
                         applied_controller,
                         placement_attachment, &weapon_origin, &weapon_axis)) {
+                    lifecycle.stage=6;
+                    lifecycle.mark(WeaponLifecycleFlag::applied_placement);
                     if (!current_head_local_weapon_enabled() &&
                         head_relative_weapon_freeze_enabled() &&
                         !transition_pending &&
@@ -6468,6 +7054,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                          g_retained_weapon_pose.axis,
                          false, false, false, false);
                     if (active_pose_published) {
+                        lifecycle.mark(WeaponLifecycleFlag::retained);
                         WAWVR_STEREO_DIAG_ONCE(
                             "WeaponDiag invalid controller pair retained the complete committed weapon context");
                     }
@@ -6475,6 +7062,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
 
                 if (!active_pose_published &&
                     outgoing_mode != WeaponGripMode::Chest) {
+                    lifecycle.mark(WeaponLifecycleFlag::retired);
                     // A held controller mode must never fall through to T4's
                     // native flat-screen placement. If neither a valid pose
                     // nor the last committed complete pose can be rendered,
@@ -6612,6 +7200,7 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                 }
             }
             if (!retained_pose_written) {
+                lifecycle.mark(WeaponLifecycleFlag::retired);
                 // The recovery window expired (or no held pose ever existed).
                 // Retire controller ownership atomically. Without a head
                 // snapshot we cannot place a real chest anchor; hide until
@@ -6637,7 +7226,14 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
 
     const std::uintptr_t original = g_original_add_player_weapon;
     const WeaponExecutableLayout* const layout = g_weapon_layout;
+    lifecycle.effective_draw=effective_draw_gun;
+    lifecycle.mark(WeaponLifecycleFlag::active,g_active_weapon_pose.valid);
+    lifecycle.mark(WeaponLifecycleFlag::refreshed,
+        g_active_weapon_pose.valid && g_active_weapon_pose.refresh_retained_pose);
+    auto* const previous_lifecycle=g_weapon_lifecycle_observation;
+    if (lifecycle.enabled) g_weapon_lifecycle_observation=&lifecycle;
     if (original != 0 && layout != nullptr) {
+        lifecycle.mark(WeaponLifecycleFlag::native_called);
         ScopedPerformanceTiming native_weapon_timing(
             PerformanceTimingPhase::weapon_native_original);
         if (layout->add_player_weapon_uses_eax_centity) {
@@ -6650,6 +7246,8 @@ extern "C" void __cdecl wawvr_add_player_weapon_bridge(
                 effective_draw_gun);
         }
     }
+    g_weapon_lifecycle_observation=previous_lifecycle;
+    observe_weapon_lifecycle(lifecycle);
     g_active_weapon_pose = previous_context;
     g_active_hands = previous_hands;
 }
@@ -7619,7 +8217,8 @@ WeaponHookInstallResult install_weapon_viewmodel_hook(
     }
 
     // Initialize every bridge dependency before any replacement call becomes
-    // visible. Peer threads remain suspended until this function returns.
+    // visible. Peers remain suspended until all weapon patches/protections
+    // commit; release that lease before optional installation or logging.
     g_weapon_layout = layout;
     g_original_add_player_weapon = *original_add_player_weapon;
     g_original_update_viewmodel_pose = *original_update_pose;
@@ -7825,6 +8424,16 @@ WeaponHookInstallResult install_weapon_viewmodel_hook(
     }
     g_weapon_hook_enabled.store(true, std::memory_order_release);
     g_weapon_hook_installed.store(true, std::memory_order_release);
+    suspended.resume();
+    static_cast<void>(initialize_sight_audit(bindings));
+    const auto server_audit_status=install_server_impact_audit(
+        bindings,&read_server_impact_audit_identity);
+    record_server_impact_audit_install_status(server_audit_status);
+    if (server_audit_status!=ServerImpactAuditHookStatus::disabled) {
+        stereo_diagnostic_log(
+            "GameplayServerImpact audit install status=%u observationOnly=1 nativeServerTrace=0x004E5B80",
+            static_cast<unsigned>(server_audit_status));
+    }
     result.status = WeaponHookStatus::installed;
     return result;
 #endif
@@ -8335,6 +8944,8 @@ ControllerPhysicalScopeIdentity classify_controller_weapon_physical_scope(
 }
 
 void request_weapon_hook_shutdown() noexcept {
+    shutdown_sight_audit();
+    request_server_impact_audit_shutdown();
     // The script bridge depends on the tracked-weapon globals. Disable it
     // first; neither callsite is unpatched during process detach.
     g_campaign_targeting_hook_enabled.store(

@@ -106,11 +106,13 @@ inline constexpr float kCod4TwoHandMaximumSeparationIwUnits = 36.0F;
     ControllerWeaponPose* pose) noexcept;
 
 // COD4 VR filters the weapon-hand grip and aim pose before converting it into
-// the engine frame. Keep the same accepted per-publication responses here so
+// the engine frame. Keep the accepted90Hz reference responses here so
 // raw Touch tracking shimmer does not become visible motion on every weapon.
 // The state stores the filtered OpenXR-space values and advances at most once
 // per published XR generation; repeated viewmodel/eye consumers of that
-// generation therefore receive one identical stabilized sample.
+// generation therefore receive one identical stabilized sample. The live
+// publication path scales that response by bounded elapsed time, not by frame
+// count, so a slower render/XR cadence does not add extra smoothing delay.
 inline constexpr float kWeaponPositionResponse = 0.45F;
 inline constexpr float kWeaponOrientationResponse = 0.55F;
 // The physical trace showed that the remaining visible motion is already in
@@ -127,12 +129,22 @@ inline constexpr float kQuietWeaponOrientationErrorDegrees = 0.20F;
 inline constexpr float kFastWeaponOrientationErrorDegrees = 2.00F;
 inline constexpr float kMaximumWeaponPositionDiscontinuityMeters = 0.50F;
 inline constexpr float kMaximumWeaponOrientationDiscontinuityDegrees = 120.0F;
+inline constexpr float kWeaponFilterReferenceIntervalMilliseconds =
+    1000.0F / 90.0F;
+inline constexpr float kWeaponFilterMaximumContinuousIntervalMilliseconds = 50.0F;
 
 [[nodiscard]] float adaptive_weapon_position_response(
     float error_meters) noexcept;
 
 [[nodiscard]] float adaptive_weapon_orientation_response(
     float error_degrees) noexcept;
+
+// Preserve the accepted 90 Hz response while avoiding longer smoothing delay
+// when fresh XR publications arrive at 72/60 Hz. Interrupted/clock-regressed
+// history never gains an unrestricted catch-up response.
+[[nodiscard]] float weapon_pose_response_for_elapsed(
+    float response_at_90_hz,
+    float elapsed_milliseconds) noexcept;
 
 struct ControllerWeaponPoseFilterState final {
     bool valid{};
@@ -141,6 +153,16 @@ struct ControllerWeaponPoseFilterState final {
     wawvr::xr::Vec3f filtered_grip_position{};
     wawvr::xr::Quaternionf filtered_aim_orientation{};
 };
+
+// The actual publication-thread adaptive filter, shared with portable latency
+// and recovery regressions. It advances once per monotonic publication key.
+// Invalid/discontinuous input leaves the accepted history unchanged; only the
+// owning grip-retirement path may explicitly reset and reseed after loss.
+[[nodiscard]] bool update_publication_controller_weapon_pose_filter(
+    const wawvr::xr::HandActionState& hand,
+    std::uint64_t generation,
+    std::uint64_t publication_milliseconds,
+    ControllerWeaponPoseFilterState* state) noexcept;
 
 // COD4 eases only the transition between the stabilized dominant-hand basis
 // and the hand-line basis.  WaW's physical trace showed that a raw support-hand

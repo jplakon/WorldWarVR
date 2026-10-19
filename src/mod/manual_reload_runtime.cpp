@@ -13,11 +13,13 @@
 #include "peer_thread_quiescence.hpp"
 #include "resident_page_access.hpp"
 #include "reload_feedback.hpp"
+#include "rigid_visibility_split.hpp"
 #include "stereo_diagnostics.hpp"
 #include "synthetic_scene_slots.hpp"
 #include "t4_layout_selector.hpp"
 #include "t4_menu_input.hpp"
 #include "viewmodel_filter.hpp"
+#include "vr_gameplay_prompts.hpp"
 #include "weapon_hook.hpp"
 #include "weapon_identity_snapshot_reader.hpp"
 #include "weapon_placement.hpp"
@@ -46,6 +48,25 @@
 
 namespace wawvr::mod {
 namespace {
+
+[[nodiscard]] VrReloadPromptStage reload_prompt_stage(
+    const gameplay::ReloadStage stage,
+    const bool chamber_required) noexcept {
+    switch (stage) {
+    case gameplay::ReloadStage::Ready:
+        return chamber_required ? VrReloadPromptStage::chamber
+                                : VrReloadPromptStage::none;
+    case gameplay::ReloadStage::ActionOpen:
+    case gameplay::ReloadStage::FeedDeviceAvailable:
+        return VrReloadPromptStage::ammunition;
+    case gameplay::ReloadStage::HoldingFeedDevice:
+    case gameplay::ReloadStage::NearInsertionPoint:
+        return VrReloadPromptStage::insert;
+    case gameplay::ReloadStage::Committing:
+        return VrReloadPromptStage::ready;
+    }
+    return VrReloadPromptStage::none;
+}
 
 std::atomic<HeadsetSvt40SelectionState> g_headset_svt40_selection_state{
     HeadsetSvt40SelectionState::unknown};
@@ -509,6 +530,8 @@ struct CachedMagazineAsset final {
     MagazineAsset asset{};
 };
 
+struct SharedFeedCompensationCache;
+
 struct RuntimeMagazineVisualState final {
     bool supported{};
     DetachableMagazineWeaponProfileId profile_id{
@@ -519,6 +542,9 @@ struct RuntimeMagazineVisualState final {
     void* viewmodel_dobj{};
     MagazineSource source{};
     MagazineAsset* asset{};
+    // Private retained rigid pieces used only while this exact transaction
+    // owns j_clip visibility. No authored XModel/XSurface is rewritten.
+    SharedFeedCompensationCache* shared_feed_compensation{};
     struct DObjWitness final {
         void* dobj{};
         XModel** model_array{};
@@ -3774,6 +3800,7 @@ void diagnose_simulator_requested_magazine_asset_from_database() noexcept {
     // that takes ownership sets authored_hidden before returning, so a false
     // value is a complete no-op proof for the visible request.
     if (!hidden && !visual.authored_hidden) {
+        visual.shared_feed_compensation = nullptr;
         return true;
     }
     if (g_weapon_info_array == 0 || !visual.supported ||
@@ -3813,6 +3840,7 @@ void diagnose_simulator_requested_magazine_asset_from_database() noexcept {
         // ownership can be retired without a stale write.
         if (!hidden) {
             visual.authored_hidden = false;
+            visual.shared_feed_compensation = nullptr;
             return true;
         }
         return false;
@@ -3877,6 +3905,7 @@ void diagnose_simulator_requested_magazine_asset_from_database() noexcept {
         }
     }
     visual.authored_hidden = false;
+    visual.shared_feed_compensation = nullptr;
     if (!restored_live && owned != nullptr) {
         WAWVR_STEREO_DIAG_ONCE(
             "ReloadDiag restored detachable-magazine persistent visibility without writing an unproven replacement DObj");
@@ -5146,6 +5175,8 @@ void rotate_by_quaternion(
         &controlled, sizeof(controlled));
     return true;
 }
+
+#include "shared_feed_geometry_runtime.inl"
 
 [[nodiscard]] bool read_controlled_charging_handle_world(
     void* const viewmodel_dobj,
@@ -6645,6 +6676,7 @@ extern "C" __declspec(naked) void manual_reload_begin_bridge() noexcept {
 #endif
 
 void clear_interaction_state_locked() noexcept {
+    publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
     reset_manual_reload_feedback();
     if (g_magazine_visual_state.authored_hidden &&
         !set_authored_magazine_hidden_locked(false)) {
@@ -6777,6 +6809,7 @@ void observe_manual_reload_session(const void* const player_state) noexcept {
 }
 
 void mark_runtime_temporarily_unavailable_locked() noexcept {
+    publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
     reset_manual_reload_feedback();
     if (g_active_magazine_binding.load(std::memory_order_acquire) != 0) {
         DetachableMagazineWeaponBinding binding{};
@@ -7660,11 +7693,13 @@ void update_detachable_magazine_viewmodel_locked(
     // the empty chamber lock could be cleared. Never retry after a claimed
     // native transfer and reinterpret its later phase as pre-commit idle.
 
-    if (!set_authored_magazine_hidden_locked(
-            update.reload.hide_authored_feed_device ||
-            exact_en_bloc_empty || profile.hide_authored_feed_device_always)) {
+    const bool hide_feed = update.reload.hide_authored_feed_device ||
+        exact_en_bloc_empty || profile.hide_authored_feed_device_always;
+    FeedSceneBatch feed_scene{};
+    if (!prepare_shared_feed_scene(profile, source, viewmodel_dobj,
+            viewmodel_pose, context.camera_origin, hide_feed, &feed_scene)) {
         WAWVR_STEREO_DIAG_ONCE(
-            "ReloadDiag %s could not apply reversible j_clip visibility ownership",
+            "VisibilityDiag %s shared-surface complement preflight failed; transaction cancelled before authored visibility changes",
             profile.diagnostic_name);
         retire_current_magazine_viewmodel_fail_closed();
         return;
@@ -7690,15 +7725,26 @@ void update_detachable_magazine_viewmodel_locked(
             // orientation becomes forgiving near the magazine well.
             magazine_world.axis = insertion_guide.axis;
         }
-        if (!render_magazine(
-                asset, magazine_world, context.camera_origin,
-                viewmodel_pose)) {
+        if (!append_feed_scene_item(&feed_scene, asset, magazine_world,
+                context.camera_origin, viewmodel_pose)) {
             WAWVR_STEREO_DIAG_ONCE(
                 "ReloadDiag detached %s magazine render preflight failed; transaction cancelled and authored visibility restored",
                 profile.diagnostic_name);
             retire_current_magazine_viewmodel_fail_closed();
             return;
         }
+    }
+    if (!preflight_feed_scene_leases(&feed_scene) ||
+        !set_authored_magazine_hidden_locked(hide_feed)) {
+        WAWVR_STEREO_DIAG_ONCE(
+            "ReloadDiag %s could not preflight the complete private feed scene or apply reversible j_clip visibility ownership",
+            profile.diagnostic_name);
+        retire_current_magazine_viewmodel_fail_closed();
+        return;
+    }
+    submit_feed_scene_batch(feed_scene);
+    log_shared_feed_scene_diagnostic(profile, source, context, hide_feed, feed_scene);
+    if (update.reload.render_detached_feed_device) {
         WAWVR_STEREO_DIAG_ONCE(
             "ReloadDiag detached %s magazine rendered from the current left-glove pose",
             profile.diagnostic_name);
@@ -7720,6 +7766,9 @@ void update_detachable_magazine_viewmodel_locked(
             std::memory_order_release);
         g_cycle_lock.store(false, std::memory_order_release);
     }
+    publish_vr_gameplay_reload_hint(input_owned
+        ? reload_prompt_stage(update.reload.stage, charging_update.charge_required)
+        : VrReloadPromptStage::none);
     g_reserve_right_grip.store(
         charging_update.reserve_right_grip,
         std::memory_order_release);
@@ -8091,6 +8140,7 @@ ManualReloadRuntimeInstallResult install_manual_reload_runtime(
 
 void service_manual_reload_simulator_asset_inventory() noexcept {
     if (!g_enabled.load(std::memory_order_acquire)) {
+        publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
         return;
     }
     diagnose_simulator_requested_magazine_asset_from_database();
@@ -8143,6 +8193,7 @@ void update_manual_reload_viewmodel(
     const void* const viewmodel_pose,
     const ManualReloadViewmodelContext& context) noexcept {
     if (!g_enabled.load(std::memory_order_acquire)) {
+        publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
         return;
     }
     // Publish the already validated rendered-weapon identity before any of the
@@ -8163,6 +8214,7 @@ void update_manual_reload_viewmodel(
     // avoid weapon identity, DObj discovery, cache, and gameplay-update work;
     // retain only the lightweight session observer.
     if (g_automatic_reload.load(std::memory_order_acquire)) {
+        publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
         observe_manual_reload_session(context.player_state);
         return;
     }
@@ -8295,6 +8347,7 @@ void update_manual_reload_viewmodel(
                         &g_controller_state);
                 if (baseline.reload.stage == gameplay::ReloadStage::Ready &&
                     baseline.reload.event == gameplay::ReloadEvent::None) {
+                    publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
                     if (idle_profile->charging.enabled) {
                         const float idle_right_squeeze =
                             idle_right.squeeze.active &&
@@ -9038,6 +9091,9 @@ void update_manual_reload_viewmodel(
         }
 
         g_supported.store(true, std::memory_order_release);
+        publish_vr_gameplay_reload_hint(input_owned && feed_visual_ready
+            ? reload_prompt_stage(update.reload.stage, bolt_update.cycle_required)
+            : VrReloadPromptStage::none);
         g_manual_active.store(
             update.reload.manual_reload_active,
             std::memory_order_release);

@@ -6,6 +6,7 @@
 #include "openxr_runtime.h"
 #include "runtime_policy.hpp"
 #include "frame_begin_lifecycle.hpp"
+#include "controller_binding_profile.hpp"
 
 #if !defined(_WIN32)
 #error WorldAtWarVR's OpenXR D3D11 backend currently supports Windows only.
@@ -174,6 +175,14 @@ struct OpenXrRuntime::Impl
         XrPath hands[kHandCount] = {XR_NULL_PATH, XR_NULL_PATH};
         XrSpace grip_spaces[kHandCount] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
         XrSpace aim_spaces[kHandCount] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+        XrPath touch_profile = XR_NULL_PATH;
+        XrPath index_profile = XR_NULL_PATH;
+        XrPath touch_primary[kHandCount] = {XR_NULL_PATH, XR_NULL_PATH};
+        XrPath touch_secondary[kHandCount] = {XR_NULL_PATH, XR_NULL_PATH};
+        XrPath index_primary[kHandCount] = {XR_NULL_PATH, XR_NULL_PATH};
+        XrPath index_secondary[kHandCount] = {XR_NULL_PATH, XR_NULL_PATH};
+        ControllerBindingProfile binding_profiles[kHandCount] = {};
+        bool binding_profiles_dirty = true;
     } actions;
 
     RuntimeConfig config = {};
@@ -897,6 +906,16 @@ struct OpenXrRuntime::Impl
     {
         actions.hands[0] = Path("/user/hand/left");
         actions.hands[1] = Path("/user/hand/right");
+        actions.touch_profile = Path("/interaction_profiles/oculus/touch_controller");
+        actions.index_profile = Path("/interaction_profiles/valve/index_controller");
+        actions.touch_primary[0] = Path("/user/hand/left/input/x/click");
+        actions.touch_primary[1] = Path("/user/hand/right/input/a/click");
+        actions.touch_secondary[0] = Path("/user/hand/left/input/y/click");
+        actions.touch_secondary[1] = Path("/user/hand/right/input/b/click");
+        actions.index_primary[0] = Path("/user/hand/left/input/a/click");
+        actions.index_primary[1] = actions.touch_primary[1];
+        actions.index_secondary[0] = Path("/user/hand/left/input/b/click");
+        actions.index_secondary[1] = actions.touch_secondary[1];
         if (actions.hands[0] == XR_NULL_PATH ||
             actions.hands[1] == XR_NULL_PATH)
         {
@@ -1303,6 +1322,57 @@ struct OpenXrRuntime::Impl
         return result;
     }
 
+    void RefreshBindingProfiles()
+    {
+        if (!actions.binding_profiles_dirty) return;
+        actions.binding_profiles_dirty = false;
+        // A profile alone does not establish the actual button after a user
+        // remap. Query source lists once per profile-change epoch, never on
+        // every frame, and label only the exact verified suggested pair.
+        std::array<XrPath,16> primary_sources{},secondary_sources{};
+        std::uint32_t primary_count = 0,secondary_count = 0;
+        XrBoundSourcesForActionEnumerateInfo info = {
+            XR_TYPE_BOUND_SOURCES_FOR_ACTION_ENUMERATE_INFO};
+        info.action = actions.primary;
+        const auto primary_result = xrEnumerateBoundSourcesForAction(session,&info,
+            static_cast<std::uint32_t>(primary_sources.size()),&primary_count,
+            primary_sources.data());
+        info.action = actions.secondary;
+        const auto secondary_result = xrEnumerateBoundSourcesForAction(session,&info,
+            static_cast<std::uint32_t>(secondary_sources.size()),&secondary_count,
+            secondary_sources.data());
+        const bool source_lists_valid = XR_SUCCEEDED(primary_result) &&
+            XR_SUCCEEDED(secondary_result) && primary_count <= primary_sources.size() &&
+            secondary_count <= secondary_sources.size();
+        const auto bound = [](const auto& sources,const std::uint32_t count,
+                              const XrPath expected) {
+            return expected != XR_NULL_PATH && count <= sources.size() &&
+                std::find(sources.begin(),sources.begin()+count,expected) !=
+                    sources.begin()+count;
+        };
+        for (std::uint32_t hand = 0; hand < kHandCount; ++hand)
+        {
+            auto& label = actions.binding_profiles[hand];
+            label = ControllerBindingProfile::generic;
+            XrInteractionProfileState profile = {XR_TYPE_INTERACTION_PROFILE_STATE};
+            if (!source_lists_valid || XR_FAILED(xrGetCurrentInteractionProfile(
+                    session,actions.hands[hand],&profile))) continue;
+            if (actions.touch_profile != XR_NULL_PATH &&
+                profile.interactionProfile == actions.touch_profile)
+                label = verified_controller_binding_profile(ControllerBindingProfile::touch,
+                    bound(primary_sources,primary_count,actions.touch_primary[hand]),
+                    bound(secondary_sources,secondary_count,actions.touch_secondary[hand]));
+            else if (actions.index_profile != XR_NULL_PATH &&
+                profile.interactionProfile == actions.index_profile)
+                label = verified_controller_binding_profile(ControllerBindingProfile::index,
+                    bound(primary_sources,primary_count,actions.index_primary[hand]),
+                    bound(secondary_sources,secondary_count,actions.index_secondary[hand]));
+        }
+        Log(LogLevel::Info,"OpenXR prompt binding profiles: left=%u right=%u generic=0 touch=1 index=2; source pairs verified; input routing unchanged",
+            static_cast<unsigned>(actions.binding_profiles[0]),
+            static_cast<unsigned>(actions.binding_profiles[1]));
+    }
+
     void ReadActions(ActionSnapshot* snapshot)
     {
         *snapshot = {};
@@ -1326,10 +1396,12 @@ struct OpenXrRuntime::Impl
             return;
         }
 
+        RefreshBindingProfiles();
         BoolActionState menu_states[kHandCount] = {};
         for (std::uint32_t hand = 0; hand < kHandCount; ++hand)
         {
             HandActionState& output = snapshot->hands[hand];
+            output.binding_profile = actions.binding_profiles[hand];
             const XrPath hand_path = actions.hands[hand];
             output.grip = ReadPose(
                 actions.grip_pose, actions.grip_spaces[hand], hand_path);
@@ -1674,6 +1746,17 @@ bool OpenXrRuntime::PollEvents()
                     impl_->exit_requested = true;
                     impl_->session_running = false;
                 }
+            }
+        }
+        else if (event.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED)
+        {
+            const auto* changed =
+                reinterpret_cast<const XrEventDataInteractionProfileChanged*>(&event);
+            if (changed->session == impl_->session)
+            {
+                impl_->actions.binding_profiles_dirty = true;
+                for (auto& profile : impl_->actions.binding_profiles)
+                    profile = ControllerBindingProfile::generic;
             }
         }
         else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING)

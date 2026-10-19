@@ -1,6 +1,8 @@
 #include "t4_hud_placement.hpp"
 
 #include "peer_thread_quiescence.hpp"
+#include "native_prompt_binding_hook.hpp"
+#include "stereo_diagnostics.hpp"
 
 #include "t4/hook_api.hpp"
 #include "t4/profile.hpp"
@@ -238,6 +240,9 @@ extern "C" std::uintptr_t wawvr_t4_original_cg_draw_2d_address = 0;
 
 extern "C" void __cdecl wawvr_t4_hud_placement_draw_service() noexcept {
     if (g_service_enabled.load(std::memory_order_acquire)) {
+        WAWVR_STEREO_DIAG_ONCE(
+            "VRPromptDiag native display-binding adapter installed=%u scriptGetKeyBinding=unchanged; translation requires focused current stereo gameplay",
+            native_prompt_binding_hook_installed() ? 1U : 0U);
         static_cast<void>(service_t4_hud_placement_before_cg_draw_2d());
     }
 }
@@ -328,18 +333,29 @@ T4HudPlacementDrawHookInstallResult install_t4_hud_placement_draw_hook(
     g_callsite = prepared.hook->target;
     g_replacement_call = replacement;
     g_installed.store(true, std::memory_order_release);
+    // Optional exact native display-binding translation. Its separate
+    // fingerprint gate leaves the original text path untouched if unavailable;
+    // no partially installed additional hook can invalidate HUD placement.
+    static_cast<void>(install_native_prompt_binding_hook(bindings));
     g_service_enabled.store(true, std::memory_order_release);
     return result;
 #endif
 }
 
 void request_t4_hud_placement_draw_hook_shutdown() noexcept {
+    request_native_prompt_binding_hook_shutdown();
     g_service_enabled.store(false, std::memory_order_release);
 }
 
 T4HudPlacementDrawHookRestoreStatus
 restore_t4_hud_placement_draw_hook() noexcept {
     request_t4_hud_placement_draw_hook_shutdown();
+    if (!restore_native_prompt_binding_hook()) {
+        // Keep the parent callsite owned too until the additional display
+        // bridge is drained/restored; never report successful teardown while
+        // a native caller can still enter DLL code.
+        return T4HudPlacementDrawHookRestoreStatus::patch_write_failed;
+    }
     if (!g_installed.load(std::memory_order_acquire)) {
         return T4HudPlacementDrawHookRestoreStatus::not_installed;
     }

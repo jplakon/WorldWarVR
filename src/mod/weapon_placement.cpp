@@ -228,6 +228,97 @@ float adaptive_weapon_orientation_response(
         kWeaponOrientationResponse);
 }
 
+bool update_publication_controller_weapon_pose_filter(
+    const wawvr::xr::HandActionState& hand,
+    const std::uint64_t generation,
+    const std::uint64_t publication_milliseconds,
+    ControllerWeaponPoseFilterState* const state) noexcept {
+    if (state == nullptr || generation == 0 ||
+        !hand.grip.active || !hand.grip.position_valid ||
+        !hand.aim.active || !hand.aim.orientation_valid ||
+        !finite_vector(hand.grip.pose.position)) return false;
+    auto target = hand.aim.pose.orientation;
+    if (!normalize_orientation(&target)) return false;
+    if (state->valid && (generation < state->generation ||
+        publication_milliseconds < state->publication_milliseconds)) return false;
+    if (state->valid && generation == state->generation) {
+        return publication_milliseconds == state->publication_milliseconds;
+    }
+    auto next = *state;
+    if (!next.valid) {
+        next.valid = true;
+        next.filtered_grip_position = hand.grip.pose.position;
+        next.filtered_aim_orientation = target;
+    } else {
+        const auto delta = subtract(hand.grip.pose.position,
+                                    next.filtered_grip_position);
+        const float distance_squared = dot(delta, delta);
+        const float raw_dot = std::abs(
+            next.filtered_aim_orientation.x * target.x +
+            next.filtered_aim_orientation.y * target.y +
+            next.filtered_aim_orientation.z * target.z +
+            next.filtered_aim_orientation.w * target.w);
+        constexpr float kRadiansToDegrees = 57.2957795131F;
+        const float angle = 2.0F *
+            std::acos(std::clamp(raw_dot, 0.0F, 1.0F)) * kRadiansToDegrees;
+        if (!finite(distance_squared) || distance_squared >
+                kMaximumWeaponPositionDiscontinuityMeters *
+                kMaximumWeaponPositionDiscontinuityMeters ||
+            !finite(angle) ||
+            angle > kMaximumWeaponOrientationDiscontinuityDegrees) return false;
+        const float elapsed_milliseconds = static_cast<float>(
+            publication_milliseconds - next.publication_milliseconds);
+        const float position_response = weapon_pose_response_for_elapsed(
+            adaptive_weapon_position_response(std::sqrt(distance_squared)),
+            elapsed_milliseconds);
+        const float orientation_response = weapon_pose_response_for_elapsed(
+            adaptive_weapon_orientation_response(angle), elapsed_milliseconds);
+        next.filtered_grip_position.x += delta.x * position_response;
+        next.filtered_grip_position.y += delta.y * position_response;
+        next.filtered_grip_position.z += delta.z * position_response;
+        const float signed_dot =
+            next.filtered_aim_orientation.x * target.x +
+            next.filtered_aim_orientation.y * target.y +
+            next.filtered_aim_orientation.z * target.z +
+            next.filtered_aim_orientation.w * target.w;
+        if (signed_dot < 0.0F) {
+            target.x = -target.x; target.y = -target.y;
+            target.z = -target.z; target.w = -target.w;
+        }
+        next.filtered_aim_orientation.x +=
+            (target.x - next.filtered_aim_orientation.x) * orientation_response;
+        next.filtered_aim_orientation.y +=
+            (target.y - next.filtered_aim_orientation.y) * orientation_response;
+        next.filtered_aim_orientation.z +=
+            (target.z - next.filtered_aim_orientation.z) * orientation_response;
+        next.filtered_aim_orientation.w +=
+            (target.w - next.filtered_aim_orientation.w) * orientation_response;
+        if (!normalize_orientation(&next.filtered_aim_orientation)) return false;
+    }
+    next.generation = generation;
+    next.publication_milliseconds = publication_milliseconds;
+    *state = next;
+    return true;
+}
+
+float weapon_pose_response_for_elapsed(
+    const float response_at_90_hz,
+    const float elapsed_milliseconds) noexcept {
+    if (!finite(response_at_90_hz) || response_at_90_hz < 0.0F ||
+        response_at_90_hz > 1.0F) return 0.0F;
+    // GetTickCount64 may give adjacent fresh publications the same clock
+    // tick. Counting a nominal frame there and the full elapsed interval on
+    // the next tick would double-count time and weaken the accepted damping.
+    if (elapsed_milliseconds == 0.0F) return 0.0F;
+    if (!finite(elapsed_milliseconds) || elapsed_milliseconds < 0.0F ||
+        elapsed_milliseconds >
+            kWeaponFilterMaximumContinuousIntervalMilliseconds) {
+        return response_at_90_hz;
+    }
+    return 1.0F - std::pow(1.0F - response_at_90_hz,
+        elapsed_milliseconds / kWeaponFilterReferenceIntervalMilliseconds);
+}
+
 bool two_hand_controller_weapon_pose(
     const ControllerWeaponPose& right,
     const ControllerWeaponPose& left,
@@ -1326,12 +1417,27 @@ bool update_right_ray_two_hand_steering_pose(
             return false;
         }
         const float cosine = std::clamp(dot(from, to), -1.0F, 1.0F);
+        *axis = cross(from, to);
+        // Re-normalizing a bit-identical direction can leave dot(v,v) one
+        // float ULP below one. acos then invents a nonzero angle although
+        // cross(v,v) is zero, causing an otherwise live pair to be retained.
+        // Resolve the existing negligible-angle interval from the cross
+        // magnitude before acos; the positive-dot condition deliberately
+        // excludes opposite directions, which still need a real axis.
+        constexpr float kNegligibleAngleRadians =
+            1.0e-4F * kDegreesToRadians;
+        if (cosine > 0.0F &&
+            dot(*axis, *axis) <=
+                kNegligibleAngleRadians * kNegligibleAngleRadians) {
+            *degrees = 0.0F;
+            *axis = {};
+            return true;
+        }
         const float angle = std::acos(cosine);
         if (!finite(angle)) {
             return false;
         }
         *degrees = angle * kRadiansToDegrees;
-        *axis = cross(from, to);
         if (*degrees <= 1.0e-4F) {
             *axis = {};
             return true;

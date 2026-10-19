@@ -6,6 +6,12 @@
 
 namespace wawvr::mod {
 
+std::string_view campaign_support_selection_command(
+    const std::int32_t mission_key) noexcept {
+    return mission_key == kMissionDpadLeftKey
+        ? "+actionslot 4\n-actionslot 4\n" : std::string_view{};
+}
+
 NativeGameplayCommandUpdate update_native_gameplay_commands(
     const NativeGameplayCommandFrame& frame,
     NativeGameplayCommandState* const state) noexcept {
@@ -14,12 +20,25 @@ NativeGameplayCommandUpdate update_native_gameplay_commands(
         return update;
     }
 
+    const bool stick_valid = frame.mission_stick_valid &&
+        std::isfinite(frame.mission_stick_x) &&
+        std::isfinite(frame.mission_stick_y);
+    const float absolute_x = stick_valid ? std::abs(frame.mission_stick_x) : 0.0F;
+    const float absolute_y = stick_valid ? std::abs(frame.mission_stick_y) : 0.0F;
+    const bool stick_centered = stick_valid &&
+        absolute_x <= kMissionDpadReleaseThreshold &&
+        absolute_y <= kMissionDpadReleaseThreshold;
+    const bool prior_stick_centered = state->mission_stick_was_centered;
+    state->mission_stick_was_centered = frame.input_owned &&
+        frame.single_player_profile && stick_centered;
+
     if (!frame.input_owned) {
         state->input_owned = false;
         state->weapon_next_was_held = frame.weapon_next_held;
         state->weapon_next_consumed_by_mission_chord =
             frame.weapon_next_held;
         state->mission_dpad_armed = false;
+        state->mission_stick_was_centered = false;
         return update;
     }
 
@@ -32,6 +51,8 @@ NativeGameplayCommandUpdate update_native_gameplay_commands(
         return update;
     }
 
+    const bool weapon_next_pressed =
+        frame.weapon_next_held && !state->weapon_next_was_held;
     const bool weapon_next_released =
         !frame.weapon_next_held && state->weapon_next_was_held;
     update.weapon_next_tap = weapon_next_released &&
@@ -41,13 +62,6 @@ NativeGameplayCommandUpdate update_native_gameplay_commands(
     }
     state->weapon_next_was_held = frame.weapon_next_held;
 
-    const bool stick_valid = frame.mission_stick_valid &&
-        std::isfinite(frame.mission_stick_x) &&
-        std::isfinite(frame.mission_stick_y);
-    const float absolute_x =
-        stick_valid ? std::abs(frame.mission_stick_x) : 0.0F;
-    const float absolute_y =
-        stick_valid ? std::abs(frame.mission_stick_y) : 0.0F;
     if (!frame.single_player_profile) {
         state->mission_dpad_armed = false;
         return update;
@@ -58,9 +72,19 @@ NativeGameplayCommandUpdate update_native_gameplay_commands(
         state->mission_dpad_armed = false;
         return update;
     }
+    // Controllers can publish Y-down and the deliberate directional change
+    // in the same XR sample. A centre observed immediately before that fresh
+    // press is sufficient; requiring a second centred sample *after* Y loses
+    // the whole gesture and turns its release into an unwanted weapon swap.
+    if (weapon_next_pressed && prior_stick_centered) {
+        state->mission_dpad_armed = true;
+    }
+    update.mission_selector_active = state->mission_dpad_armed ||
+        state->weapon_next_consumed_by_mission_chord;
     if (absolute_x <= kMissionDpadReleaseThreshold &&
         absolute_y <= kMissionDpadReleaseThreshold) {
         state->mission_dpad_armed = true;
+        update.mission_selector_active = true;
         return update;
     }
     if (!state->mission_dpad_armed) {
@@ -83,6 +107,7 @@ NativeGameplayCommandUpdate update_native_gameplay_commands(
         // Only an explicitly armed, emitted direction consumes Y/B. Pressing
         // weapon-next while already walking must remain a normal weapon swap.
         state->weapon_next_consumed_by_mission_chord = true;
+        update.mission_selector_active = true;
         update.mission_key_tap = selected_key;
         state->mission_dpad_armed = false;
     }

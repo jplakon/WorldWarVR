@@ -21,6 +21,10 @@
 #include "t4_menu_input.hpp"
 #include "t4_presentation_state.hpp"
 #include "weapon_hook.hpp"
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_BEGIN
+#include "server_impact_audit.hpp"
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_END
+#include "vr_gameplay_prompt_overlay.hpp"
 #endif
 
 #include "d3d11_compositor.h"
@@ -450,7 +454,12 @@ void append_log(
             // thread precisely when a controller handoff is being rendered.
             // Preserve immediate durability for actual errors; the ordinary
             // one-second cadence is sufficient for warnings and information.
-            const bool urgent = level == wawvr::xr::LogLevel::Error;
+            // Explicit opt-in fixture acknowledgements are transaction receipts,
+            // not per-frame telemetry. A quiet scene may emit no further log
+            // calls, so the command harness must not mistake a buffered ACK for
+            // a failed native command. Keep ordinary render warnings buffered.
+            const bool urgent = level == wawvr::xr::LogLevel::Error ||
+                message.starts_with("PerfCommandDiag ack ");
             if (urgent || g_log_last_flush.time_since_epoch().count() == 0 ||
                 now - g_log_last_flush >= std::chrono::seconds(1)) {
                 g_log_stream.flush();
@@ -1798,6 +1807,17 @@ private:
         if (pending_frame_.should_render && pending_frame_.views_valid &&
             (stereo_scene ||
              presentation_mode != PresentationMode::stereo)) {
+#if defined(WAWVR_HAS_T4_BINDINGS)
+            // The native target swapchain and this frame's exact packed eye
+            // rectangles are known here. Add only action-level VR guidance;
+            // native subtitles, tutorial strings and menus are never edited.
+            draw_vr_gameplay_prompt_overlay(device, layout, pending_frame_,
+                stereo_scene && presentation_mode == PresentationMode::stereo &&
+                    t4_state_valid && connection_state == active_connection_state &&
+                    key_catchers == 0,
+                g_renderer_layout.load(std::memory_order_acquire) ==
+                    kRendererLayoutMultiplayer);
+#endif
             // Multiple Presents may occur before the exact post-Com_Frame
             // consumer boundary. Relinquish the older GPU capture before
             // asking the ring for a replacement slot.
@@ -3481,6 +3501,11 @@ void input_diagnostic_log(const char* const format, ...) noexcept {
     }
 }
 
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_BEGIN
+bool stereo_diagnostic_log_ready() noexcept {
+    return g_log_module.load(std::memory_order_acquire) != nullptr;
+}
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_END
 void stereo_diagnostic_log(const char* const format, ...) noexcept {
     if (format == nullptr) {
         return;
@@ -3534,6 +3559,11 @@ bool mono_xr_ready() noexcept {
 
 void run_present_hook_monitor(const HMODULE module) noexcept {
     g_log_module.store(module, std::memory_order_release);
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_BEGIN
+#if defined(WAWVR_HAS_T4_BINDINGS)
+    log_server_impact_audit_install_status_if_ready();
+#endif
+// COLT_ZERO_DEFERRED_OBSERVER_STATUS_END
     const PresentExecutableProfile* const profile =
         configured_present_profile();
     if (profile == nullptr) {

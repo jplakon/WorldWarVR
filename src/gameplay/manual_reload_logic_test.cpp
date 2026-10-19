@@ -253,6 +253,80 @@ void test_detachable_drop_and_cancel_restore_visibility_safely() {
            "focus loss cancels detachable ownership and restores authored visibility");
 }
 
+void test_quick_magazine_insertion_accepts_the_actual_release_sample() {
+    const auto profile = make_reload_profile(ReloadProfileKind::DetachableMagazine);
+    for (int trial = 0; trial < 1000; ++trial) {
+        ReloadState state{};
+        auto input = ready_input();
+        input.reload_pressed_edge = true;
+        static_cast<void>(update_manual_reload(profile, input, &state));
+        input = ready_input();
+        input.off_hand_pose_valid = true;
+        input.grip_pressed_edge = true;
+        input.grip_held = true;
+        input.hand_in_feed_device_zone = true;
+        static_cast<void>(update_manual_reload(profile, input, &state));
+
+        // No intervening render sample in which the device is held in the
+        // well: this is an ordinary quick physical insertion, not a teleport
+        // or synthetic grip edge.
+        input = ready_input();
+        input.off_hand_pose_valid = true;
+        input.hand_in_insertion_zone = true;
+        input.grip_released_edge = true;
+        auto output = update_manual_reload(profile, input, &state);
+        expect(output.stage == ReloadStage::Committing &&
+                   output.event == ReloadEvent::CommitRequested &&
+                   output.request_native_commit &&
+                   !output.render_detached_feed_device,
+               "first-contact release commits an already-held magazine");
+
+        int commit_events = 1;
+        for (int replay = 0; replay < 12; ++replay) {
+            output = update_manual_reload(profile, input, &state);
+            commit_events += output.event == ReloadEvent::CommitRequested;
+            expect(output.stage == ReloadStage::Committing &&
+                       output.request_native_commit,
+                   "quick insertion waits for native acknowledgment without a second transaction");
+        }
+        input.native_commit_completed = true;
+        output = update_manual_reload(profile, input, &state);
+        expect(output.stage == ReloadStage::Ready &&
+                   output.event == ReloadEvent::CommitCompleted &&
+                   !output.request_native_commit &&
+                   !output.hide_authored_feed_device && commit_events == 1,
+               "quick insertion has one commit event and restores the full authored weapon");
+        output = update_manual_reload(profile, input, &state);
+        expect(output.stage == ReloadStage::Ready &&
+                   !output.request_native_commit &&
+                   output.event == ReloadEvent::None,
+               "replayed release and acknowledgment cannot reload a ready weapon");
+    }
+
+    for (int rejected_case = 0; rejected_case < 4; ++rejected_case) {
+        ReloadState state{};
+        auto input = ready_input();
+        input.reload_pressed_edge = true;
+        static_cast<void>(update_manual_reload(profile, input, &state));
+        if (rejected_case != 3) {
+            input = ready_input();
+            input.off_hand_pose_valid = true;
+            input.grip_pressed_edge = true;
+            input.grip_held = true;
+            input.hand_in_feed_device_zone = true;
+            static_cast<void>(update_manual_reload(profile, input, &state));
+        }
+        input = ready_input();
+        input.off_hand_pose_valid = rejected_case != 0;
+        input.hand_in_insertion_zone = rejected_case != 1;
+        input.grip_released_edge = rejected_case != 2;
+        const auto output = update_manual_reload(profile, input, &state);
+        expect(!output.request_native_commit &&
+                   output.event != ReloadEvent::CommitRequested,
+               "quick insertion rejects invalid pose, off-well release, absent edge or unowned device");
+    }
+}
+
 void test_focus_loss_and_context_change_cancel_safely() {
     const auto profile =
         make_reload_profile(ReloadProfileKind::InternalStripperClip);
@@ -534,6 +608,7 @@ int main() {
     test_dropping_clip_outside_insertion_does_not_reload();
     test_detachable_magazine_commits_on_release_in_well();
     test_detachable_drop_and_cancel_restore_visibility_safely();
+    test_quick_magazine_insertion_accepts_the_actual_release_sample();
     test_focus_loss_and_context_change_cancel_safely();
     test_null_state_is_fail_closed();
     test_colt_clip_rigid_submesh_is_exact_and_rebased();

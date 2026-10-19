@@ -55,6 +55,13 @@ struct T4MenuInputServiceResult final {
     const wawvr::t4::ValidatedBindings& bindings) noexcept;
 void clear_t4_menu_input() noexcept;
 
+// Published only by the native post-Com_Frame selector service. The command
+// hook consumes the matching XR sample; renderers may use the fresh time-bound
+// summary without touching engine input state.
+[[nodiscard]] bool campaign_support_selector_consumes_movement(
+    std::uint64_t action_sequence) noexcept;
+[[nodiscard]] bool campaign_support_selector_active() noexcept;
+
 // True only during the post-handoff inventory phase in which the single-player
 // OpenXR simulator has loaded the campaign zone requested by the exact
 // detachable-magazine selector. This lets diagnostics inspect a precached

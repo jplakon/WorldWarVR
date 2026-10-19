@@ -18,6 +18,7 @@ add_library(
         xr_math.cpp
         xr_math.h
         xr_types.h
+        sight_pixel_capture_logic.hpp
 )
 
 target_include_directories(wawvr_xr PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -41,6 +42,11 @@ else()
 endif()
 
 if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
+    add_executable(wawvr_xr_sight_pixel_capture_tests sight_pixel_capture_logic_test.cpp)
+    target_link_libraries(wawvr_xr_sight_pixel_capture_tests PRIVATE wawvr_project_options)
+    target_include_directories(wawvr_xr_sight_pixel_capture_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME xr.sight_pixel_capture COMMAND wawvr_xr_sight_pixel_capture_tests)
+
     add_executable(wawvr_xr_frame_begin_tests frame_begin_lifecycle_test.cpp)
     target_link_libraries(wawvr_xr_frame_begin_tests PRIVATE wawvr_project_options)
     target_include_directories(wawvr_xr_frame_begin_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")

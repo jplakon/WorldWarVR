@@ -22,6 +22,7 @@ struct Fixture {
     bool owned{true};
     bool supported_weapon_owned{};
     std::uint32_t attacks{};
+    xr::Vec3f last_observed_position{};
 
     xr::HandActionState& right() {
         return snapshot.frame.actions.hands[
@@ -64,6 +65,27 @@ struct Fixture {
             owned, snapshot, snapshot.publication_milliseconds + 1,
             &state, supported_weapon_owned, identity);
         if (result != Gesture::none) ++attacks;
+        last_observed_position=right().grip.pose.position;
+        return result;
+    }
+    Gesture sampled_attack(const std::uint64_t elapsed) {
+        if (mode==Mode::rifle) return sample(elapsed);
+        const auto start=last_observed_position;
+        const auto target=right().grip.pose.position;
+        auto result=Gesture::none;
+        std::uint64_t advanced=0;
+        for (unsigned step=1;step<=4;++step) {
+            const float fraction=static_cast<float>(step)*0.25F;
+            right().grip.pose.position={start.x+(target.x-start.x)*fraction,
+                start.y+(target.y-start.y)*fraction,start.z+(target.z-start.z)*fraction};
+            const auto at=elapsed*step/4;
+            const auto observed=sample(at-advanced);
+            advanced=at;
+            if (observed!=Gesture::none) {
+                if (result!=Gesture::none) throw std::runtime_error("sampled single-hand attack duplicated");
+                result=observed;
+            }
+        }
         return result;
     }
     void move_forward(float meters) {
@@ -110,7 +132,7 @@ void firing_release_regression() {
             require(f.sample(11) == Gesture::none,
                     "discarded firing motion cannot replay after release", mode);
             f.move_forward(0.08F);
-            require(f.sample(40) == f.expected_attack(),
+            require(f.sampled_attack(40) == f.expected_attack(),
                     "fresh intentional attack must work after trigger release", mode);
             require(f.attacks == 1, "exactly one fresh attack is allowed", mode);
         }
@@ -179,7 +201,7 @@ void ownership_and_tracking_stress() {
             require(f.sample(11) == Gesture::none,
                     "recovery must establish a quiet baseline", mode);
             f.move_forward(0.08F);
-            require(f.sample(40) == f.expected_attack(),
+            require(f.sampled_attack(40) == f.expected_attack(),
                     "fresh attack must work after recovery", mode);
         }
     }
@@ -194,7 +216,7 @@ void ownership_and_tracking_stress() {
         f.move_forward(0.08F);
         require(f.sample(40) == Gesture::none, "regrip must establish baseline", mode);
         f.move_forward(0.08F);
-        require(f.sample(40) == f.expected_attack(), "intentional attack after regrip", mode);
+        require(f.sampled_attack(40) == f.expected_attack(), "intentional attack after regrip", mode);
     }
     Fixture pistol(Mode::pistol);
     // The production caller withholds exact pistol identity while native
@@ -211,7 +233,7 @@ void ownership_and_tracking_stress() {
     require(pistol.sample(40) == Gesture::none,
             "reload completion must establish a new baseline", pistol.mode);
     pistol.move_forward(0.08F);
-    require(pistol.sample(40) == pistol.expected_attack(),
+    require(pistol.sampled_attack(40) == pistol.expected_attack(),
             "fresh attack must work after reload", pistol.mode);
 }
 
@@ -237,7 +259,7 @@ void release_boundary_and_reload_ownership() {
             require(f.sample(11) == Gesture::none,
                     "release boundary motion cannot replay on the next clock tick", mode);
             f.move_forward(0.08F);
-            require(f.sample(40) == f.expected_attack(),
+            require(f.sampled_attack(40) == f.expected_attack(),
                     "fresh gesture survives release timing and ownership recovery", mode);
         }
 
@@ -254,7 +276,7 @@ void release_boundary_and_reload_ownership() {
         require(f.sample(40) == Gesture::none,
                 "last overlapping trigger release establishes a fresh baseline", mode);
         f.move_forward(0.08F);
-        require(f.sample(40) == f.expected_attack(),
+        require(f.sampled_attack(40) == f.expected_attack(),
                 "fresh deliberate attack works after overlapping interactions", mode);
     }
 
@@ -281,7 +303,7 @@ void release_boundary_and_reload_ownership() {
                     "trigger release after pistol permission returns stays quiet", f.mode);
         }
         f.move_forward(0.08F);
-        require(f.sample(40) == f.expected_attack(),
+        require(f.sampled_attack(40) == f.expected_attack(),
                 "fresh pistol attack works after reload permission and trigger recovery", f.mode);
     }
 

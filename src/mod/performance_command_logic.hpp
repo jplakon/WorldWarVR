@@ -23,6 +23,27 @@ enum class PerformanceCommandId : std::uint8_t {
     load_oki3,
     toggleconsole,
     console_close,
+    // Fixed simulator-only fixtures. The service additionally requires the
+    // actual private Tester module and an explicit child command-file path.
+    test_load_nacht,
+    test_load_mak,
+    test_load_pel1,
+    test_load_ber1,
+    test_load_sniper,
+    test_load_ber3,
+    test_colt,
+    test_garand,
+    test_carbine,
+    test_thompson,
+    test_type100,
+    test_bar,
+    test_springfield,
+    test_mosin,
+    test_svt,
+    test_ppsh,
+    test_kar98k,
+    test_ammo,
+    test_observe_safely,
 };
 
 struct PerformanceCommandRequest final {

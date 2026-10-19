@@ -2,14 +2,15 @@
 
 World War VR brings tracked, room-scale OpenXR play to the Windows retail version of **Call of Duty: World at War**. It provides stereo rendering, 6DOF headset tracking, motion-controller weapons, two-hand handling, manual reload interactions, physical scopes, grenades, and VR-native comfort controls through a standalone launcher.
 
-The current free release is **v0.4.0-beta.5**, improving short-range grass and
-shrub visibility, Mosin clip interactions, reload feedback, Campaign pause-menu
-layout and accidental-melee safeguards. The outdoor headset check showed a
-substantial foliage improvement, but some pop-in remains. Earlier chest,
-aiming, mounted-gun and scope work is retained; see [CHANGELOG.md](CHANGELOG.md).
-This is not a universal frame-rate or headset-compatibility fix.
+The current free release is **v0.4.0-beta.6**, a focused controls and aiming
+update: default-off stick-click melee, sprint/reload/handling refinements,
+controller-aware help, Campaign support controls, and exact weapon sight
+corrections including the starting Nacht Colt. The Colt correction received
+native OpenXR Tester checks and a successful local headset test. Earlier foliage,
+chest, scope and feedback work is retained; see [CHANGELOG.md](CHANGELOG.md).
+This is not an all-weapons, universal frame-rate or headset-compatibility fix.
 
-> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.5 package. The latest foliage check covered Hard Landing through VirtualDesktopXR; other maps and hardware still need feedback. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
+> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.6 package. The latest local headset result accepts the starting Colt fix, not every weapon or a settled multi-range zero. Experimental practical enemy-grenade throwback remains disabled. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
 
 World War VR is a fan-made open-source project. It does not include Call of Duty: World at War executables, maps, textures, audio, or other Activision game content. You need your own legitimate, compatible World at War 1.7 installation.
 

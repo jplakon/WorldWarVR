@@ -20,6 +20,9 @@ struct PublishedWeaponMuzzleSnapshot final {
     wawvr::xr::Basis3f projectile_basis{};
     bool weapon_root_basis_valid{};
     wawvr::xr::Basis3f weapon_root_basis{};
+    // Measurement-only receipt. It never participates in production aim,
+    // freshness or profile selection; zero when sight diagnostics are off.
+    std::uint64_t diagnostic_publication_serial{};
 };
 
 // Pure fail-closed freshness check shared by the game-thread hook and tests.
@@ -116,6 +119,11 @@ struct BazookaViewmodelAlignment final {
 // rifles, unknown weapons and untested variants retain their existing path.
 [[nodiscard]] bool hitscan_uses_tag_flash_forward(
     std::string_view internal_weapon_name) noexcept;
+enum class CalibratedRifleAsset : std::uint8_t { none,garand,mosin };
+// Exact native asset identity only. Scopes, attachments, Zombies/custom
+// variants and the already accepted SVT/PPSh policy are not selected here.
+[[nodiscard]] CalibratedRifleAsset calibrated_rifle_asset_for_identity(
+    std::string_view weapon,std::string_view viewmodel) noexcept;
 
 inline constexpr float kMinimumBazookaBoreLengthWorldUnits = 50.0F;
 inline constexpr float kMaximumBazookaBoreLengthWorldUnits = 80.0F;

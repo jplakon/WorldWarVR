@@ -49,6 +49,24 @@ void clear_controller_frame() noexcept;
 // retired the weapon; ordinary invalid publications preserve accepted history.
 void reset_controller_weapon_publication_filters() noexcept;
 
+struct UnheldControllerPublicationRecovery final {
+    bool current_weapon_available{};
+    bool committed_chest{};
+    bool retained_controller_owner{};
+    bool nested_controller_owner{};
+};
+
+// An unheld hand can relocalize while the visible weapon remains on the
+// chest. Permit only that owner to retire ONE rejected publication filter.
+// The current immutable frame stays invalid; a later real XR publication
+// seeds the new baseline. Existing held/retained/nested owners never use this
+// recovery, and a generation race or already-valid publication does nothing.
+[[nodiscard]] bool recover_unheld_controller_publication(
+    const UnheldControllerPublicationRecovery& ownership,
+    std::uint64_t expected_generation,
+    wawvr::xr::Hand hand,
+    std::uint64_t now_milliseconds) noexcept;
+
 // Full XR teardown discards any queued transfer because a later session will
 // capture a new tracking anchor from the then-current HMD pose.
 void discard_controller_tracking_anchor_rebase() noexcept;

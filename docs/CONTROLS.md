@@ -1,5 +1,10 @@
 # World War VR controls and recovery notes
 
+Button names below use Touch controllers first. Verified Index bindings use
+left A for Touch X, left B for Touch Y, and right A for reload. Unverified or
+remapped bindings use L-PRIMARY, L-SECONDARY or R-PRIMARY rather than guessed
+labels. This is a targeted gameplay beta, not all-controller certification.
+
 ## Gameplay
 
 - Headset: 6DOF view and position.
@@ -45,8 +50,10 @@
   While the M1 Garand with the M7 rifle-grenade attachment is active, the same
   tap toggles directly between the rifle and its grenade launcher; tap Y again
   to return to the rifle.
-- Campaign support selector: hold Y/left-secondary, then push the left stick
-  left once to send WaW's native `6` key. This equips the rocket-barrage
+- Campaign support selector: start with the left stick centred, hold
+  Y/left-secondary, then push the left stick left once. Centre the stick and
+  release Y before continuing. Hold right grip once the tool is equipped,
+  aim with the right controller and use right trigger. This equips the rocket-barrage
   designator in Little Resistance or the airstrike radio in Shuri Castle.
   Point with the right controller and use the normal right trigger. Shuri
   Castle still restricts valid strike areas through its mission logic.
@@ -55,7 +62,9 @@
   same hidden mission D-pad provides up=`5`, down=`N`, and right=`7` for
   matching native campaign prompts; the path cannot run in multiplayer.
   Passive Touch thumbrest contact is never treated as a modifier.
-- Right stick click, a fast outward free-right-hand swing, a forward pistol
+- Right-stick-click melee is disabled by default. Advanced opt-in
+  `WAWVR_RIGHT_STICK_MELEE=1` restores that binding; there is no new launcher
+  checkbox. A fast outward free-right-hand swing, a forward pistol
   jab while holding only the right grip, or a deliberate forward rifle thrust
   while both grips are held: melee. A held-pistol jab follows the right
   controller's pointing direction; release the firing trigger first. It is
@@ -64,7 +73,9 @@
   firearm's ordinary melee attack otherwise. The action and damage remain
   native, its comfortable trace range is extended to 96 game units, and
   target-assisted camera rotation/lunge is suppressed for VR comfort. Normal
-  two-hand aiming, firing, and grip handoffs are not melee gestures.
+  two-hand aiming, firing, and grip handoffs are not intended melee gestures.
+  Natural gestures and tracking can vary; finite tests do not close every
+  affected user's accidental-melee report.
 - Right grip: draw and hold the firearm. Left grip adds the support hand and
   the native firing/ADS pose; either hand can retain a supported weapon while
   the other hand uses that free hand's index trigger for its manual weapon
@@ -92,6 +103,22 @@
   when ready. Tactical reloads with a round chambered do not require this step.
 - Other weapon variants can have different manual actions. Report the exact
   weapon and map if its interaction differs from these instructions.
+
+### Bolt/clip rifles and help
+
+Use the free hand's index **trigger** at the bolt to open the action; use its
+**grip** at the hip to obtain replacement ammunition. Bring the clip into the
+open receiver, complete the weapon-specific insertion and closure sequence,
+then regrip before firing. Not all variants share an identical gesture.
+
+Hold **Y / L-SECONDARY** during normal Zombies/Campaign gameplay to retrieve
+the lowered two-line controls help; release to hide it. This is also the
+weapon-next modifier: a plain release can still cycle weapons, even after a
+long help hold. Only an actually completed mission-direction chord consumes
+that release. Generated reload, sprint/fire and radio guidance adapts to
+settings/bindings. Additional literal interaction/cursor and baked loading-tip
+translations are advanced opt-in paths, disabled by default; unknown or
+localized tutorials may retain native keyboard wording.
 
 ### Black Cats aircraft guns
 
@@ -151,7 +178,7 @@ alternatives. All are disabled by default:
 Turn an option off and relaunch the game to restore its default control.
 
 The desktop firearm crosshair is disabled during VR gameplay. Aim with the
-visible barrel; use prompts, grenade warnings, ammo, points, and round HUD
+visible sights; use prompts, grenade warnings, ammo, points, and round HUD
 remain available. Gameplay HUD elements are reduced and pulled into the
 central binocular field so ammo, points, round, and minimap elements can be
 read without turning the eyes toward the uncomfortable edges of the lenses.
@@ -178,23 +205,18 @@ input—including desktop ADS—remains available on the desktop.
   head left/right/up/down produces real parallax; gameplay switches to stereo
   VR. Controller pointing is enabled only while WaW's native UI owns input.
 
-Launch the configured `WorldWarVR.exe` for the stock Zombies frontend. The
-managed launcher supplies the game directory; standalone use requires
-`--game-dir`, `WAWVR_GAME_DIR`, or an already prepared launcher-managed runtime.
-That same
-executable boots Nacht with `--launch`, Der Riese with
+Launch `WorldWarVR.exe` for the managed settings window and select Main Menu.
+The adjacent native helper `wawvr-launcher.exe` provides advanced command-line
+use with `--game-dir`, `WAWVR_GAME_DIR`, or an already prepared launcher-managed
+runtime. That helper boots Nacht with `--launch`, Der Riese with
 `--launch --der-riese`, or the frontend with `--launch --menu`; every form
 automatically validates and injects the adjacent `WorldWarVR.dll`.
 
 ## Offline multiplayer and bots
 
-Choose **Launch Multiplayer** from the single-player frontend or double-click:
-
-```text
-WorldWarVR-Multiplayer.exe
-```
-
-The command-line equivalent is `WorldWarVR.exe --launch --multiplayer`.
+Choose **Multiplayer** in the managed launcher, or **Launch Multiplayer** in
+the single-player frontend. Advanced command-line use is
+`wawvr-launcher.exe --launch --multiplayer --game-dir "YOUR GAME FOLDER"`.
 
 The single-player process exits before the isolated multiplayer runtime starts,
 so OpenXR is handed off rather than shared by two game processes. From the MP
@@ -225,7 +247,7 @@ creates this off-screen through D3D9Ex, independently of the desktop size. If
 performance regresses, use the `3744x2016` packed performance preset:
 
 ```text
-WorldWarVR.exe --launch --resolution 3744x2016
+wawvr-launcher.exe --launch --resolution 3744x2016 --game-dir "YOUR GAME FOLDER"
 ```
 
 Use `2560x1440` for the compatibility preset. Offline multiplayer keeps that
@@ -269,3 +291,7 @@ the render thread and is intentionally disabled by default.
 World War VR does not include the game. The launcher validates and stages a
 user-owned compatible World at War 1.7 executable and links to its existing
 data without modifying the installation.
+
+The experimental contextual enemy-grenade pickup/throwback shortcut is not
+enabled in beta.6. Existing belt/button grenade controls above remain; do not
+use private diagnostic builds as the public release.

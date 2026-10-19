@@ -416,6 +416,15 @@ namespace wawvr::launcher
         SourceResolution desktop);
     std::wstring quote_windows_argument(const std::wstring& argument);
     std::wstring build_game_command_line(const LaunchPlan& plan);
+    // The retail parser reserves its first of 32 segments for the leading
+    // command-line prefix. A 32nd '+' command is swallowed into command 31.
+    inline constexpr std::size_t kMaximumT4StartupCommands = 31;
+    void validate_t4_startup_command_budget(std::wstring_view command_line);
+    std::string_view launch_policy_config_contents(const LaunchPlan& plan);
+    std::filesystem::path launch_policy_config_path(const LaunchPlan& plan);
+    // Writes only the isolated home/main content-addressed policy file. An
+    // existing file must match exactly; conflicting files are never replaced.
+    void prepare_launch_policy_config(const LaunchPlan& plan);
     std::optional<ExecutableIdentityId> executable_identity_from_sha256(
         ExecutableKind kind,
         std::string_view sha256) noexcept;

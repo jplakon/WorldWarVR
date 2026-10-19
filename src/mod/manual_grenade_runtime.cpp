@@ -4,6 +4,10 @@
 #include "button_grenade_logic.hpp"
 #include "input_mapping.hpp"
 #include "manual_grenade_logic.hpp"
+#include "grenade_native_observation.hpp"
+#include "grenade_queue_receipts.hpp"
+#include "grenade_observer_memory.hpp"
+#include "grenade_observer_patch_logic.hpp"
 #include "peer_thread_quiescence.hpp"
 #include "stereo_diagnostics.hpp"
 #include "t4_layout_selector.hpp"
@@ -106,6 +110,45 @@ constexpr std::size_t kLocalPlayerClientPointerOffset = 0x180;
 constexpr std::size_t kLocalPlayerEntityIdentitySpan = 0x184;
 constexpr wawvr::t4::Rva kLastParsedWeaponIndexRva = 0x042DE3BC;
 
+// Exact unpacked Steam SP evidence is recorded in t4/PROVENANCE.md. The
+// experiment is deliberately opt-in until real enemy-grenade tests pass.
+constexpr wchar_t kContextualThrowbackExperimentEnvironment[] =
+    L"WAWVR_EXPERIMENTAL_CONTEXTUAL_THROWBACK";
+// Hard safety boundary: native event replay, shutdown cancellation and the
+// complete inventory envelope still need independent review/live proof. Even
+// an explicit experimental environment must not activate this candidate yet.
+constexpr bool kContextualThrowbackCandidateClearedForLive = false;
+constexpr wawvr::t4::Rva kContextFireEntryRva = 0x000214E0;
+constexpr wawvr::t4::Rva kContextNativeEndRva = 0x00021630;
+constexpr wawvr::t4::Rva kContextPickupCallRva = 0x000E7C05;
+constexpr wawvr::t4::Rva kContextPickupTargetRva = 0x000E7910;
+constexpr wawvr::t4::Rva kContextThrowEventCallRva = 0x000E7BD3;
+constexpr wawvr::t4::Rva kContextThrowEventTargetRva = 0x00152780;
+constexpr std::array<std::uint8_t, 9> kContextFireDisplaced{
+    0x57, 0x8B, 0x38, 0x8B, 0x8F, 0xD0, 0x00, 0x00, 0x00,
+};
+constexpr std::array<std::uint8_t, 7> kContextPickupCallPrefix{
+    0x63, 0x03, 0x00, 0x00, 0x8B, 0xFE, 0xE8,
+};
+constexpr std::array<std::uint8_t, 5> kContextPickupCallSuffix{
+    0xE9, 0x53, 0x03, 0x00, 0x00,
+};
+constexpr std::size_t kContextPlayerStateOwnerOffset = 0x4C;
+constexpr std::size_t kContextPlayerStateFuseOffset = 0x48;
+constexpr std::size_t kContextPlayerStateHintEntityOffset = 0x870;
+constexpr std::size_t kContextPlayerStateWeaponStateOffset = 0x108;
+constexpr std::size_t kContextEntitySize = 0x378;
+constexpr std::size_t kContextEntityTypeOffset = 0x04;
+constexpr std::size_t kContextEntityWeaponOffset = 0xA8;
+// Exact SP G_InitGentity sets +0x11D; G_FreeEntity clears the entity and
+// advances +0x90. +0x118 is a separate native link-state byte, not allocation.
+constexpr std::size_t kContextEntityInUseOffset = 0x11D;
+constexpr std::size_t kContextEntityHandlerOffset = 0x19E;
+constexpr std::size_t kContextEntityOwnerHandleOffset = 0x1C0;
+constexpr std::uint8_t kContextFragHandler = 14;
+constexpr std::uint32_t kContextMissileType = 4;
+constexpr std::size_t kContextSourceIdentitySpan = 0x1C2;
+
 constexpr std::uint64_t kPendingMilliseconds = 3000;
 constexpr std::uint64_t kViewRecoveryMilliseconds = 750;
 constexpr std::int64_t kMinimumVelocityDeltaNanoseconds = 4'000'000;
@@ -146,6 +189,7 @@ struct ManualGrenadeRuntimeState final {
     bool holding_suspended{};
     bool recovery_requires_repress{};
     std::uint64_t transaction_generation{};
+    std::int32_t native_throwback_fuse_at_grab{};
 };
 
 enum class NativeGrenadeCommandPolicy : std::uint32_t {
@@ -170,6 +214,17 @@ std::uintptr_t g_local_player_entity = 0;
 std::uintptr_t g_last_weapon_index = 0;
 std::uintptr_t g_locational_trace = 0;
 std::uintptr_t g_bullet_priority_map = 0;
+std::atomic<bool> g_contextual_experiment_installed{false};
+std::atomic<bool> g_contextual_transaction_active{false};
+ContextualThrowbackTransaction g_contextual_transaction{};
+std::uintptr_t g_contextual_predicted_player_state = 0;
+std::uintptr_t g_contextual_native_pickup = 0;
+std::uintptr_t g_contextual_native_end = 0;
+std::uintptr_t g_contextual_native_throw = 0;
+std::uintptr_t g_contextual_native_level_time = 0;
+void* g_contextual_fire_trampoline = nullptr;
+void install_contextual_throwback_experiment(
+    const wawvr::t4::ValidatedBindings& bindings) noexcept;
 
 [[nodiscard]] bool button_grenades_enabled_from_environment() noexcept {
     std::array<wchar_t, 2> value{};
@@ -587,6 +642,36 @@ struct GrenadeInventoryResolution final {
     void* projectile_model{};
     bool frag_throwback_override{};
 };
+
+std::atomic<std::int32_t> g_throwback_time_left{0};
+std::atomic<std::uint64_t> g_throwback_sample_milliseconds{0};
+std::atomic<std::uint64_t> g_local_grenade_spawn_count{0};
+
+[[nodiscard]] std::int32_t sample_native_throwback_time_left() noexcept {
+    std::uint32_t client32 = 0;
+    if (g_local_player_entity == 0 ||
+        !accessible_range(reinterpret_cast<const void*>(
+            g_local_player_entity + kLocalPlayerClientPointerOffset),
+            sizeof(client32))) {
+        return 0;
+    }
+    std::memcpy(&client32, reinterpret_cast<const void*>(
+        g_local_player_entity + kLocalPlayerClientPointerOffset), sizeof(client32));
+    if (client32 < 0x10000 || client32 >
+        (std::numeric_limits<std::uintptr_t>::max)() -
+            kPlayerStateThrowbackTimeOffset - sizeof(std::int32_t)) {
+        return 0;
+    }
+    const auto address = static_cast<std::uintptr_t>(client32) +
+        kPlayerStateThrowbackTimeOffset;
+    std::int32_t time_left = 0;
+    if (client32 == 0 || !accessible_range(
+            reinterpret_cast<const void*>(address), sizeof(time_left))) {
+        return 0;
+    }
+    std::memcpy(&time_left, reinterpret_cast<const void*>(address), sizeof(time_left));
+    return time_left > 0 ? time_left : 0;
+}
 
 [[nodiscard]] std::uint32_t grenade_button_mask(
     const ManualGrenadeSlot slot) noexcept {
@@ -1148,6 +1233,291 @@ void invoke_locational_trace(
     return true;
 }
 
+struct ContextNativePlayerState final {
+    std::uintptr_t address{};
+    std::uint32_t offhand{};
+    std::int32_t owner{0x3FF};
+    std::int32_t fuse{};
+    std::int32_t window{};
+    std::int32_t weapon_state{};
+    std::int32_t hint_entity{};
+};
+
+[[nodiscard]] std::uintptr_t context_server_player_state() noexcept {
+    const auto* const entity = reinterpret_cast<const std::uint8_t*>(
+        g_local_player_entity);
+    if (!accessible_range(entity, kLocalPlayerEntityIdentitySpan)) {
+        return 0;
+    }
+    std::uint32_t client = 0;
+    std::memcpy(&client, entity + kLocalPlayerClientPointerOffset,
+                sizeof(client));
+    return client != 0 && accessible_range(
+        reinterpret_cast<const void*>(static_cast<std::uintptr_t>(client)),
+        kPlayerStateMinimumSpan, true) ? client : 0;
+}
+
+[[nodiscard]] bool read_context_native_player_state(
+    const std::uintptr_t address,
+    ContextNativePlayerState* const result) noexcept {
+    if (result == nullptr || address == 0 || !accessible_range(
+            reinterpret_cast<const void*>(address), kPlayerStateMinimumSpan,
+            true)) {
+        return false;
+    }
+    const auto* const state = reinterpret_cast<const std::uint8_t*>(address);
+    *result = {};
+    result->address = address;
+    std::memcpy(&result->offhand, state + kPlayerStateOffhandIndexOffset, 4);
+    std::memcpy(&result->owner, state + kContextPlayerStateOwnerOffset, 4);
+    std::memcpy(&result->fuse, state + kContextPlayerStateFuseOffset, 4);
+    std::memcpy(&result->window, state + kPlayerStateThrowbackTimeOffset, 4);
+    std::memcpy(&result->weapon_state,
+                state + kContextPlayerStateWeaponStateOffset, 4);
+    std::memcpy(&result->hint_entity,
+                state + kContextPlayerStateHintEntityOffset, 4);
+    return true;
+}
+
+struct ContextNativePickupSource final {
+    std::uintptr_t entity{};
+    std::uint32_t weapon{};
+    std::int32_t owner{0x3FF};
+    std::int32_t remaining_fuse{};
+};
+
+[[nodiscard]] bool read_context_native_pickup_source(
+    ContextNativePickupSource* const result) noexcept {
+    ContextNativePlayerState player{};
+    if (result == nullptr || !read_context_native_player_state(
+            context_server_player_state(), &player) ||
+        player.window <= 0 || player.window > 60000 ||
+        player.hint_entity <= 0 || player.hint_entity >= 0x3FF) {
+        return false;
+    }
+    const auto address = g_local_player_entity +
+        static_cast<std::uintptr_t>(player.hint_entity) * kContextEntitySize;
+    const auto* const entity = reinterpret_cast<const std::uint8_t*>(address);
+    if (!accessible_range(entity, kContextSourceIdentitySpan) ||
+        entity[kContextEntityInUseOffset] != 1 ||
+        entity[kContextEntityHandlerOffset] != kContextFragHandler) {
+        return false;
+    }
+    std::uint32_t type = 0;
+    std::uint32_t weapon = 0;
+    std::uint16_t owner_handle = 0;
+    std::memcpy(&type, entity + kContextEntityTypeOffset, sizeof(type));
+    std::memcpy(&weapon, entity + kContextEntityWeaponOffset, sizeof(weapon));
+    std::memcpy(&owner_handle, entity + kContextEntityOwnerHandleOffset,
+                sizeof(owner_handle));
+    weapon &= 0x7FU;
+    std::uintptr_t definition = 0;
+    void* model = nullptr;
+    if (type != kContextMissileType || owner_handle > 0x3FF ||
+        !resolve_grenade_weapon(weapon, ManualGrenadeSlot::frag,
+                                &definition, &model)) {
+        return false;
+    }
+    *result = {address, weapon,
+        owner_handle != 0 ? static_cast<std::int32_t>(owner_handle) - 1
+                          : 0x3FE,
+        player.window};
+    return true;
+}
+
+[[nodiscard]] bool context_native_source_was_freed(
+    const ContextNativePickupSource& source) noexcept {
+    const auto* const entity = reinterpret_cast<const std::uint8_t*>(
+        source.entity);
+    return source.entity != 0 && accessible_range(
+        entity, kContextEntityInUseOffset + 1) &&
+        entity[kContextEntityInUseOffset] == 0;
+}
+
+[[nodiscard]] ContextualThrowbackPlayerState context_player_state_kind(
+    const std::uintptr_t address) noexcept {
+    if (address != 0 && address == context_server_player_state()) {
+        return ContextualThrowbackPlayerState::authoritative;
+    }
+    return address != 0 && address == g_contextual_predicted_player_state
+        ? ContextualThrowbackPlayerState::predicted
+        : ContextualThrowbackPlayerState::unrelated;
+}
+
+#if defined(_MSC_VER) && defined(_M_IX86)
+void __cdecl call_context_native_pickup(std::uintptr_t, void*);
+void __cdecl call_context_native_throw(std::uintptr_t, void*);
+
+#include "grenade_native_observer_runtime.inl"
+
+void __cdecl context_native_pickup_bridge_impl(
+    void* const entity, const std::uint32_t ordinal) noexcept {
+    const auto original = g_contextual_native_pickup;
+    if (original == 0) return;
+    try {
+        if (g_grenade_native_observer_enabled.load(std::memory_order_acquire)) {
+            observe_grenade_native_event_call(original, entity, ordinal, 40);
+            return;
+        }
+        std::uint64_t generation = 0;
+        bool guarded = false;
+        {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            guarded = g_contextual_experiment_installed.load(
+                std::memory_order_acquire) &&
+                entity == reinterpret_cast<void*>(g_local_player_entity) &&
+                g_contextual_transaction.stage !=
+                    ContextualThrowbackStage::inactive;
+            if (guarded) {
+                if (g_contextual_transaction.stage !=
+                    ContextualThrowbackStage::waiting_for_pickup) return;
+                generation = g_contextual_transaction.generation;
+                if (!validate_contextual_throwback_pickup_attempt(
+                        GetTickCount64(), generation,
+                        &g_contextual_transaction)) return;
+            }
+        }
+        if (!guarded) {
+            call_context_native_pickup(original, entity);
+            return;
+        }
+        ContextNativePickupSource source{};
+        if (!read_context_native_pickup_source(&source)) {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            if (g_contextual_transaction.generation == generation)
+                abort_contextual_throwback(&g_contextual_transaction);
+            stereo_diagnostic_log(
+                "ThrowbackContextDiag pickup rejected before native consumption transaction=%llu; no own-frag fallback",
+                static_cast<unsigned long long>(generation));
+            return;
+        }
+        // No lock is held across native script/item processing. The original
+        // routine can refuse pickup even after copying owner/fuse. Its known
+        // success path frees this exact in-use missile; that is mandatory.
+        // Recheck after the bounded source read as well: checking only the
+        // eventual witness would reject too late, after consuming a missile.
+        {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            if (!validate_contextual_throwback_pickup_attempt(
+                    GetTickCount64(), generation,
+                    &g_contextual_transaction)) return;
+        }
+        call_context_native_pickup(original, entity);
+        ContextNativePlayerState after{};
+        const bool state_valid = read_context_native_player_state(
+            context_server_player_state(), &after);
+        const bool source_freed = context_native_source_was_freed(source);
+        bool witnessed = false;
+        {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            witnessed = witness_contextual_throwback_pickup(
+                GetTickCount64(), generation, source.weapon,
+                state_valid ? after.owner : 0x3FF,
+                state_valid && after.fuse == source.remaining_fuse
+                    ? after.fuse : 0,
+                true, source_freed && state_valid &&
+                    after.owner == source.owner &&
+                    after.offhand == source.weapon,
+                &g_contextual_transaction);
+        }
+        stereo_diagnostic_log(
+            "ThrowbackContextDiag native pickup transaction=%llu source=%p sourceFreed=%d witnessed=%d weapon=%u owner=%d copiedFuse=%d expectedFuse=%d offhand=%u",
+            static_cast<unsigned long long>(generation),
+            reinterpret_cast<void*>(source.entity), source_freed ? 1 : 0,
+            witnessed ? 1 : 0, source.weapon, after.owner, after.fuse,
+            source.remaining_fuse, after.offhand);
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        abort_contextual_throwback(&g_contextual_transaction);
+    }
+}
+
+[[nodiscard]] int __cdecl context_native_fire_gate_impl(
+    const void* const pmove) noexcept {
+    if (!g_contextual_experiment_installed.load(std::memory_order_acquire) ||
+        !g_contextual_transaction_active.load(std::memory_order_acquire) ||
+        !accessible_range(pmove, sizeof(std::uint32_t))) return 0;
+    std::uint32_t ps = 0;
+    std::memcpy(&ps, pmove, sizeof(ps));
+    const auto kind = context_player_state_kind(ps);
+    if (kind == ContextualThrowbackPlayerState::unrelated) return 0;
+    ContextNativePlayerState snapshot{};
+    if (!read_context_native_player_state(ps, &snapshot)) return 1;
+    try {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        const auto decision = evaluate_contextual_throwback_fire(
+            GetTickCount64(), kind, snapshot.offhand, snapshot.owner,
+            &g_contextual_transaction);
+        const int route = decision == ContextualThrowbackFireDecision::hold
+            ? 1 : decision == ContextualThrowbackFireDecision::cancel ? 2 : 0;
+        static std::array<int, 3> last_route{-1, -1, -1};
+        const auto index = static_cast<std::size_t>(kind);
+        if (last_route[index] != route) {
+            last_route[index] = route;
+            stereo_diagnostic_log(
+                "ThrowbackContextDiag fire gate transaction=%llu role=%u decision=%u route=%d weapon=%u owner=%d fuse=%d nativeState=%d",
+                static_cast<unsigned long long>(g_contextual_transaction.generation),
+                static_cast<unsigned>(kind), static_cast<unsigned>(decision),
+                route, snapshot.offhand, snapshot.owner, snapshot.fuse,
+                snapshot.weapon_state);
+        }
+        return route;
+    } catch (...) {
+        return 1;  // no native event/ammo mutation on an ambiguous guard failure
+    }
+}
+
+void __cdecl context_native_throw_event_bridge_impl(
+    void* const entity, const std::uint32_t ordinal) noexcept {
+    const auto original = g_contextual_native_throw;
+    if (original == 0) return;
+    try {
+        if (g_grenade_native_observer_enabled.load(std::memory_order_acquire)) {
+            observe_grenade_native_event_call(original, entity, ordinal, 39);
+            return;
+        }
+        bool guarded = false;
+        bool permitted = false;
+        std::uint64_t generation = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_state_mutex);
+            guarded = g_contextual_experiment_installed.load(
+                std::memory_order_acquire) &&
+                entity == reinterpret_cast<void*>(g_local_player_entity) &&
+                g_contextual_transaction.stage !=
+                    ContextualThrowbackStage::inactive;
+            if (guarded) {
+                generation = g_contextual_transaction.generation;
+                ContextNativePlayerState state{};
+                const bool native_matches = read_context_native_player_state(
+                    context_server_player_state(), &state) &&
+                    state.owner == g_contextual_transaction.native_owner &&
+                    state.owner != 0x3FF &&
+                    state.offhand == g_contextual_transaction.weapon_index;
+                // No validated event-ownership adapter exists yet. Current
+                // weapon/owner and a mod generation cannot identify a queued
+                // event39 across rearm. Do not manufacture a receipt here.
+                permitted = native_matches && consume_contextual_throwback_spawn(
+                    state.offhand, &g_contextual_transaction, nullptr);
+            }
+        }
+        if (guarded) {
+            stereo_diagnostic_log(
+                "ThrowbackContextDiag authoritative event39 transaction=%llu permitted=%d; native spawn chain never receives synthetic null",
+                static_cast<unsigned long long>(generation), permitted ? 1 : 0);
+            if (!permitted) return;
+        }
+        call_context_native_throw(original, entity);
+    } catch (...) {
+        // This exact void event-dispatch seam has no result consumed by the
+        // caller. Rejection happens here, not by returning a null missile to
+        // the native grenade caller that unconditionally dereferences it.
+    }
+}
+
+#include "contextual_throwback_bridge.inl"
+#endif
+
 void* __cdecl manual_grenade_fire_bridge(
     void* const parent,
     float* const start,
@@ -1164,11 +1534,15 @@ void* __cdecl manual_grenade_fire_bridge(
     std::uint32_t pending_weapon_index = 0;
     std::uint64_t pending_until_milliseconds = 0;
     std::uint64_t matching_generation = 0;
+    bool contextual_throwback = false;
+    std::int32_t native_fuse_at_grab = 0;
     {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         pending_stage = g_state.gesture.stage;
         pending_weapon_index = g_state.grenade_weapon_index;
         pending_until_milliseconds = g_state.pending_until_milliseconds;
+        contextual_throwback = g_state.gesture.contextual_throwback;
+        native_fuse_at_grab = g_state.native_throwback_fuse_at_grab;
         if (native_spawn_matches_transaction_locked(
                 parent, grenade_weapon_index)) {
             matching_generation = g_state.transaction_generation;
@@ -1181,9 +1555,17 @@ void* __cdecl manual_grenade_fire_bridge(
     } catch (...) {
         // The exact retail callsite must never observe a C++ exception.
     }
+#if defined(_MSC_VER) && defined(_M_IX86)
+    const auto native_observation = observe_grenade_native_spawn_begin(
+        parent, grenade_weapon_index);
+#endif
     void* const grenade = original(
         parent, start, velocity, grenade_weapon_index, grenade_model,
         rotate, fuse_time);
+#if defined(_MSC_VER) && defined(_M_IX86)
+    observe_grenade_native_spawn_end(native_observation, grenade,
+        grenade_weapon_index, fuse_time);
+#endif
     if (matching_generation != 0) {
         std::lock_guard<std::mutex> lock(g_state_mutex);
         if (g_state.transaction_generation == matching_generation &&
@@ -1202,16 +1584,211 @@ void* __cdecl manual_grenade_fire_bridge(
                 ? static_cast<std::int64_t>(pending_until_milliseconds) -
                     static_cast<std::int64_t>(GetTickCount64())
                 : 0;
-        WAWVR_STEREO_DIAG_ONCE(
-            "GrenadeDiag local G_FireGrenade bridge observed: applied=%d parentMatch=%d weapon=%u pendingStage=%u pendingWeapon=%u pendingRemaining=%lldms",
+        const auto local_spawn_count = grenade != nullptr &&
+            parent == reinterpret_cast<void*>(g_local_player_entity)
+            ? g_local_grenade_spawn_count.fetch_add(1, std::memory_order_acq_rel) + 1
+            : g_local_grenade_spawn_count.load(std::memory_order_acquire);
+        stereo_diagnostic_log(
+            "GrenadeDiag local G_FireGrenade bridge observed: applied=%d parentMatch=%d weapon=%u pendingStage=%u pendingWeapon=%u pendingRemaining=%lldms transaction=%llu contextualThrowback=%d fuseAtGrab=%d nativeFuseIn=%d nativeFuseOut=%d grenade=%p localSpawnCount=%llu argumentEqualityOnly=1 nativeScheduledExpiryMeasured=0",
             physical_override_applied ? 1 : 0,
             parent == reinterpret_cast<void*>(g_local_player_entity) ? 1 : 0,
             grenade_weapon_index,
             static_cast<unsigned int>(pending_stage),
             pending_weapon_index,
-            static_cast<long long>(pending_remaining_milliseconds));
+            static_cast<long long>(pending_remaining_milliseconds),
+            static_cast<unsigned long long>(matching_generation),
+            contextual_throwback ? 1 : 0, native_fuse_at_grab,
+            fuse_time, fuse_time, grenade,
+            static_cast<unsigned long long>(local_spawn_count));
     }
     return grenade;
+}
+
+void install_contextual_throwback_experiment(
+    const wawvr::t4::ValidatedBindings& bindings) noexcept {
+#if !defined(_MSC_VER) || !defined(_M_IX86)
+    static_cast<void>(bindings);
+#else
+    if constexpr (!kContextualThrowbackCandidateClearedForLive) {
+        static_cast<void>(bindings);
+        WAWVR_STEREO_DIAG_ONCE(
+            "ThrowbackContextDiag contextual-anywhere candidate unavailable: native replay/shutdown/inventory safety review incomplete; no experimental hooks installed; existing hip route unchanged");
+        return;
+    }
+    std::array<wchar_t, 2> enabled{};
+    if (GetEnvironmentVariableW(kContextualThrowbackExperimentEnvironment,
+            enabled.data(), static_cast<DWORD>(enabled.size())) != 1 ||
+        enabled[0] != L'1') {
+        WAWVR_STEREO_DIAG_ONCE(
+            "ThrowbackContextDiag contextual-anywhere experiment disabled by default; existing hip route unchanged");
+        return;
+    }
+    struct Fingerprint final {
+        wawvr::t4::Rva rva;
+        std::size_t size;
+        std::uint64_t fnv1a64;
+    };
+    constexpr std::array<Fingerprint, 6> fingerprints{{
+        {0x000214E0, 328, 0x6938992BCAD0A97DULL},
+        {0x00021630, 179, 0xD177B2C5F90C4E09ULL},
+        {0x000E7910, 265, 0x4B9B8A182A08F0EFULL},
+        {0x000FD110, 53, 0xA3693D034C68547CULL},
+        {0x000FD210, 355, 0xA7540E93320E5D11ULL},
+        {0x0014EDC0, 226, 0xFD34C9C368D55DFAULL},
+    }};
+    const auto fingerprints_match = [&]() noexcept {
+        for (const auto& item : fingerprints) {
+            const auto address = bindings.module().address(item.rva, item.size);
+            if (!address.has_value() || !accessible_range(
+                    reinterpret_cast<const void*>(*address), item.size))
+                return false;
+            const auto* const bytes = reinterpret_cast<const std::uint8_t*>(
+                *address);
+            std::uint64_t hash = 14695981039346656037ULL;
+            for (std::size_t index = 0; index < item.size; ++index)
+                hash = (hash ^ bytes[index]) * 1099511628211ULL;
+            if (hash != item.fnv1a64) return false;
+        }
+        return true;
+    };
+    const auto fire = bindings.module().address(kContextFireEntryRva, 9);
+    const auto pickup_call = bindings.module().address(kContextPickupCallRva, 5);
+    const auto pickup = bindings.module().address(kContextPickupTargetRva, 265);
+    const auto native_end = bindings.module().address(kContextNativeEndRva, 179);
+    const auto predicted = bindings.data_address(
+        wawvr::t4::DataSymbolId::predicted_player_state, sizeof(std::uint32_t));
+    const auto handler_slot = bindings.module().address(0x004DBF4C, 4);
+    const auto handler = bindings.module().address(0x000FD110, 53);
+    constexpr std::array<std::array<std::uint32_t, 4>, 3> descriptors{{
+        {{0x00897BE4, 0x4C, 0xA, 0}},
+        {{0x00897EA8, 0x50, 0xFFFFFFF0, 0}},
+        {{0x00897F00, 0x870, 0xA, 0}},
+    }};
+    constexpr std::array<wawvr::t4::Rva, 3> descriptor_rvas{
+        0x00437130, 0x00436E80, 0x00436E20};
+    bool fields_match = true;
+    for (std::size_t index = 0; index < descriptor_rvas.size(); ++index) {
+        const auto address = bindings.module().address(descriptor_rvas[index], 16);
+        fields_match = fields_match && address.has_value() &&
+            accessible_range(reinterpret_cast<const void*>(*address), 16) &&
+            std::memcmp(reinterpret_cast<const void*>(*address),
+                        descriptors[index].data(), 16) == 0;
+    }
+    std::uint32_t actual_handler = 0;
+    if (handler_slot.has_value() && accessible_range(
+            reinterpret_cast<const void*>(*handler_slot), 4)) {
+        std::memcpy(&actual_handler,
+                    reinterpret_cast<const void*>(*handler_slot), 4);
+    }
+    if (!fire.has_value() || !pickup_call.has_value() || !pickup.has_value() ||
+        !native_end.has_value() || !predicted.has_value() ||
+        !handler.has_value() || actual_handler != *handler || !fields_match ||
+        !fingerprints_match() ||
+        !bytes_equal(reinterpret_cast<const void*>(*fire), kContextFireDisplaced) ||
+        !bytes_equal(reinterpret_cast<const void*>(*pickup_call - 6),
+                     kContextPickupCallPrefix) ||
+        !bytes_equal(reinterpret_cast<const void*>(*pickup_call + 5),
+                     kContextPickupCallSuffix) ||
+        decode_rel32(reinterpret_cast<const std::uint8_t*>(*pickup_call)) !=
+            *pickup) {
+        stereo_diagnostic_log(
+            "ThrowbackContextDiag experiment rejected: exact native code/data/ABI gates do not match; existing hip route unchanged");
+        return;
+    }
+    auto* const trampoline = static_cast<std::uint8_t*>(VirtualAlloc(
+        nullptr, 14, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (trampoline == nullptr) return;
+    std::memcpy(trampoline, kContextFireDisplaced.data(), 9);
+    std::array<std::uint8_t, 5> resume{};
+    if (!build_rel32(reinterpret_cast<std::uintptr_t>(trampoline + 9),
+                     *fire + 9, &resume)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return;
+    }
+    resume[0] = 0xE9;
+    std::memcpy(trampoline + 9, resume.data(), 5);
+    DWORD old = 0;
+    if (!VirtualProtect(trampoline, 14, PAGE_EXECUTE_READ, &old) ||
+        !FlushInstructionCache(GetCurrentProcess(), trampoline, 14)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return;
+    }
+    std::array<std::uint8_t, 9> fire_patch{};
+    fire_patch.fill(0x90);
+    std::array<std::uint8_t, 5> branch{};
+    if (!build_rel32(*fire, reinterpret_cast<std::uintptr_t>(
+            &context_native_fire_gate_bridge), &branch)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return;
+    }
+    branch[0] = 0xE9;
+    std::copy(branch.begin(), branch.end(), fire_patch.begin());
+    const auto write_fire = [&](const std::array<std::uint8_t, 9>& bytes) noexcept {
+        DWORD old_protection = 0;
+        auto* const target = reinterpret_cast<void*>(*fire);
+        if (!VirtualProtect(target, bytes.size(), PAGE_EXECUTE_READWRITE,
+                            &old_protection)) return false;
+        std::memcpy(target, bytes.data(), bytes.size());
+        const bool flushed = FlushInstructionCache(
+            GetCurrentProcess(), target, bytes.size()) != FALSE;
+        DWORD ignored = 0;
+        const bool restored = VirtualProtect(target, bytes.size(),
+            old_protection, &ignored) != FALSE;
+        return flushed && restored && bytes_equal(target, bytes);
+    };
+    const std::array<PeerThreadPatchRange, 2> ranges{{
+        {*fire, 9}, {*pickup_call, 5}}};
+    // A suspended peer may own the mod mutex. Initialize protected state
+    // before suspending anyone, while contextual input is still unavailable.
+    {
+        std::lock_guard<std::mutex> lock(g_state_mutex);
+        g_contextual_transaction = {};
+    }
+    SuspendedPeerThreads peers;
+    PeerThreadQuiesceResult quiesce{};
+    if (!peers.suspend(ranges, &quiesce) || !fingerprints_match()) {
+        peers.resume();
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        stereo_diagnostic_log(
+            "ThrowbackContextDiag experiment patch quiescence/fingerprint rejected error=%lu",
+            quiesce.system_error);
+        return;
+    }
+    // Dependencies are valid before either branch is exposed. The feature
+    // remains inactive until both patches are verified while peers are stopped.
+    g_contextual_predicted_player_state = *predicted;
+    g_contextual_native_pickup = *pickup;
+    g_contextual_native_end = *native_end;
+    g_contextual_fire_trampoline = trampoline;
+    DWORD error = 0;
+    const auto pickup_bridge = reinterpret_cast<std::uintptr_t>(
+        &context_native_pickup_bridge);
+    if (!write_fire(fire_patch) ||
+        !patch_call(reinterpret_cast<std::uint8_t*>(*pickup_call),
+                    pickup_bridge, &error)) {
+        DWORD rollback_error = 0;
+        const bool call_restored = patch_call(
+            reinterpret_cast<std::uint8_t*>(*pickup_call), *pickup,
+            &rollback_error);
+        const bool fire_restored = write_fire(kContextFireDisplaced);
+        if (call_restored && fire_restored) {
+            g_contextual_fire_trampoline = nullptr;
+            VirtualFree(trampoline, 0, MEM_RELEASE);
+        }
+        // If a rollback cannot be proved, retain the pass-through dependencies
+        // and allocation. Never expose contextual input after a partial patch.
+        peers.resume();
+        stereo_diagnostic_log(
+            "ThrowbackContextDiag experiment patch failed error=%lu rollback=%d; contextual input disabled",
+            error, call_restored && fire_restored ? 1 : 0);
+        return;
+    }
+    g_contextual_transaction_active.store(false, std::memory_order_release);
+    g_contextual_experiment_installed.store(true, std::memory_order_release);
+    peers.resume();
+    stereo_diagnostic_log(
+        "ThrowbackContextDiag exact-SP contextual experiment installed; native pickup/free witness and pre-event fire gate required; headset acceptance=0");
+#endif
 }
 
 }  // namespace
@@ -1373,6 +1950,8 @@ ManualGrenadeRuntimeInstallResult install_manual_grenade_runtime(
     g_enabled.store(true, std::memory_order_release);
     g_installed.store(true, std::memory_order_release);
     result.status = ManualGrenadeRuntimeStatus::installed;
+    install_grenade_native_observer(bindings);
+    install_contextual_throwback_experiment(bindings);
     return result;
 #endif
 }
@@ -1380,6 +1959,23 @@ ManualGrenadeRuntimeInstallResult install_manual_grenade_runtime(
 bool button_grenade_mode_enabled() noexcept {
     return g_enabled.load(std::memory_order_acquire) &&
         g_button_grenades_enabled.load(std::memory_order_acquire);
+}
+
+std::int32_t read_manual_grenade_throwback_time_left() noexcept {
+    const auto sampled = g_throwback_sample_milliseconds.load(std::memory_order_acquire);
+    const auto now = GetTickCount64();
+    if (!g_enabled.load(std::memory_order_acquire) || sampled == 0 ||
+        now < sampled || now - sampled > kMaximumControllerFrameAgeMilliseconds) {
+        return 0;
+    }
+    return g_throwback_time_left.load(std::memory_order_acquire);
+}
+
+bool contextual_manual_grenade_throwback_available() noexcept {
+    return kContextualThrowbackCandidateClearedForLive &&
+        g_enabled.load(std::memory_order_acquire) &&
+        g_contextual_experiment_installed.load(std::memory_order_acquire) &&
+        !g_button_grenades_enabled.load(std::memory_order_acquire);
 }
 
 ManualGrenadeCommandUpdate update_manual_grenade_command(
@@ -1402,6 +1998,18 @@ ManualGrenadeCommandUpdate update_manual_grenade_command(
     const std::uint32_t all_offhand_masks = frag_mask | tactical_mask;
     const std::uint32_t original_offhand_bits =
         *buttons & all_offhand_masks;
+    const auto context_now = GetTickCount64();
+    const bool contextual_input_owned = input_owned &&
+        gameplay_session == ManualGrenadeGameplaySession::active &&
+        controller_frame_is_current(controller, context_now) &&
+        controller.frame.actions.focused;
+    const std::int32_t contextual_throwback_time = contextual_input_owned
+        ? sample_native_throwback_time_left() : 0;
+#if defined(_MSC_VER) && defined(_M_IX86)
+    observe_grenade_native_window(contextual_input_owned);
+#endif
+    g_throwback_time_left.store(contextual_throwback_time, std::memory_order_release);
+    g_throwback_sample_milliseconds.store(context_now, std::memory_order_release);
     if (g_button_grenades_enabled.load(std::memory_order_acquire)) {
         try {
             const std::uint64_t now_milliseconds = GetTickCount64();
@@ -1499,6 +2107,55 @@ ManualGrenadeCommandUpdate update_manual_grenade_command(
             g_left_hand_reserved.store(
                 result.left_hand_reserved, std::memory_order_release);
         };
+        if (g_contextual_transaction.stage ==
+                ContextualThrowbackStage::waiting_for_pickup &&
+            now_milliseconds >
+                g_contextual_transaction.pickup_deadline_milliseconds) {
+            abort_contextual_throwback(&g_contextual_transaction);
+        }
+        if (gameplay_session == ManualGrenadeGameplaySession::inactive &&
+            g_contextual_transaction.stage ==
+                ContextualThrowbackStage::acquired) {
+            // An explicit world teardown is distinct from temporary focus or
+            // tracking loss. Keep a tombstone against queued old-world events.
+            g_contextual_transaction.stage = ContextualThrowbackStage::aborted;
+        }
+        if (g_contextual_transaction.stage == ContextualThrowbackStage::spent ||
+            g_contextual_transaction.stage == ContextualThrowbackStage::aborted) {
+            ContextNativePlayerState server{};
+            ContextNativePlayerState predicted{};
+            const bool server_idle = read_context_native_player_state(
+                context_server_player_state(), &server) &&
+                server.weapon_state == 0;
+            const bool predicted_idle = read_context_native_player_state(
+                g_contextual_predicted_player_state, &predicted) &&
+                predicted.weapon_state == 0;
+            const bool trigger_released = input_valid &&
+                left.trigger.current <= kManualGrenadeTriggerRelease;
+            const auto generation = g_contextual_transaction.generation;
+            const bool retired = retire_contextual_throwback_tombstone(
+                trigger_released, server_idle, predicted_idle,
+                // Idle does not acknowledge old dispatcher entries. A native
+                // queue-drain adapter is still missing, so retain tombstones.
+                &g_contextual_transaction, nullptr);
+            clear_transaction_locked(true, true, true);
+            if (retired) {
+                g_contextual_transaction_active.store(
+                    false, std::memory_order_release);
+                g_state.gesture.input_initialized = true;
+                g_state.gesture.trigger_was_held = false;
+                stereo_diagnostic_log(
+                    "ThrowbackContextDiag tombstone retired transaction=%llu bothNativeIdle=1 triggerReleased=1",
+                    static_cast<unsigned long long>(generation));
+            }
+            *buttons &= ~all_offhand_masks;
+            g_native_command_policy.store(
+                retired ? NativeGrenadeCommandPolicy::passthrough
+                        : NativeGrenadeCommandPolicy::release_pending,
+                std::memory_order_release);
+            publish_result();
+            return result;
+        }
         // The fire bridge can retire a transaction after the initial atomic
         // snapshot but before this lock is acquired. Re-derive the command
         // policy from the mutex-protected state so a retired hold cannot leak
@@ -1534,6 +2191,7 @@ ManualGrenadeCommandUpdate update_manual_grenade_command(
 
         if (gameplay_session ==
             ManualGrenadeGameplaySession::inactive) {
+            abort_contextual_throwback(&g_contextual_transaction);
             clear_transaction_locked(false, false, false);
             restore_original_offhand_bits();
             return result;
@@ -1614,8 +2272,12 @@ ManualGrenadeCommandUpdate update_manual_grenade_command(
         if (!update_manual_grenade_gesture(
                 input_valid, left.trigger.active, left.trigger.current,
                 head_local,
-                new_grab_blocked || left_squeeze_held,
-                &g_state.gesture, &event)) {
+                new_grab_blocked || left_squeeze_held ||
+                    g_contextual_transaction.stage !=
+                        ContextualThrowbackStage::inactive,
+                &g_state.gesture, &event,
+                contextual_manual_grenade_throwback_available() &&
+                    contextual_throwback_time > 0)) {
             return result;
         }
         if (event == ManualGrenadeEvent::reset) {
@@ -1630,14 +2292,31 @@ ManualGrenadeCommandUpdate update_manual_grenade_command(
             g_state.velocity_tracking_anchor_valid = false;
         } else if (event == ManualGrenadeEvent::grab_frag ||
                    event == ManualGrenadeEvent::grab_tactical) {
-            const GrenadeInventoryResolution inventory =
+            GrenadeInventoryResolution inventory =
                 resolve_grenade_inventory(g_state.gesture.held_slot);
-            if (inventory.status !=
-                GrenadeInventoryStatus::available) {
+            const bool contextual_request = g_state.gesture.contextual_throwback;
+            ContextNativePickupSource contextual_source{};
+            bool contextual_source_valid = !contextual_request;
+            if (contextual_request &&
+                read_context_native_pickup_source(&contextual_source)) {
+                std::uintptr_t definition = 0;
+                void* model = nullptr;
+                contextual_source_valid = resolve_grenade_weapon(
+                    contextual_source.weapon, ManualGrenadeSlot::frag,
+                    &definition, &model);
+                if (contextual_source_valid) {
+                    inventory.weapon_index = contextual_source.weapon;
+                    inventory.projectile_model = model;
+                }
+            }
+            if (inventory.status != GrenadeInventoryStatus::available ||
+                (contextual_request &&
+                    (!inventory.frag_throwback_override ||
+                     !contextual_source_valid))) {
                 const ManualGrenadeSlot requested_slot =
                     g_state.gesture.held_slot;
                 clear_transaction_locked(true, false, false);
-                if (inventory.status ==
+                if (!contextual_request && inventory.status ==
                     GrenadeInventoryStatus::proven_empty) {
                     const std::uint32_t pulse_mask =
                         grenade_button_mask(requested_slot);
@@ -1652,7 +2331,7 @@ ManualGrenadeCommandUpdate update_manual_grenade_command(
                 } else {
                     restore_original_offhand_bits();
                     WAWVR_STEREO_DIAG_ONCE(
-                        "GrenadeDiag physical belt grab inventory preflight was invalid; no native throw input emitted");
+                        "GrenadeDiag physical/contextual grab preflight unavailable; no native throw input emitted and no fresh-grenade fallback");
                 }
                 publish_result();
                 return result;
@@ -1677,12 +2356,38 @@ ManualGrenadeCommandUpdate update_manual_grenade_command(
             g_state.recovery_requires_repress = false;
             g_state.transaction_generation =
                 next_transaction_generation();
+            g_state.native_throwback_fuse_at_grab = inventory.frag_throwback_override
+                ? contextual_request ? contextual_source.remaining_fuse
+                                     : contextual_throwback_time
+                : 0;
+            if (contextual_request) {
+                if (!begin_contextual_throwback(now_milliseconds,
+                        g_state.transaction_generation, inventory.weapon_index,
+                        contextual_source.remaining_fuse,
+                        &g_contextual_transaction)) {
+                    clear_transaction_locked(true, false, false);
+                    *buttons &= ~all_offhand_masks;
+                    publish_result();
+                    return result;
+                }
+                g_contextual_transaction_active.store(
+                    true, std::memory_order_release);
+                stereo_diagnostic_log(
+                    "ThrowbackContextDiag pending enemy-only acquisition transaction=%llu source=%p weapon=%u nativeWindow=%d; ownAmmoUntouched=1",
+                    static_cast<unsigned long long>(g_state.transaction_generation),
+                    reinterpret_cast<void*>(contextual_source.entity),
+                    inventory.weapon_index, contextual_source.remaining_fuse);
+            }
             g_native_command_policy.store(
                 native_policy_for_slot(g_state.gesture.held_slot),
                 std::memory_order_release);
-            if (inventory.frag_throwback_override) {
-                WAWVR_STEREO_DIAG_ONCE(
-                    "GrenadeDiag physical live-frag throwback grabbed from the left hip with the left index trigger");
+            if (inventory.frag_throwback_override && !contextual_request) {
+                stereo_diagnostic_log(
+                    "GrenadeDiag existing hip-route live-frag request: remainingFuse=%d nativeAcquisitionWitness=unavailable contextualAnywhereEnabled=0 transaction=%llu sequence=%llu weapon=%u",
+                    contextual_throwback_time,
+                    static_cast<unsigned long long>(g_state.transaction_generation),
+                    static_cast<unsigned long long>(actions.sequence),
+                    inventory.weapon_index);
             } else {
                 WAWVR_STEREO_DIAG_ONCE(
                     "GrenadeDiag physical %s grabbed from %s hip with the left index trigger",
@@ -1885,6 +2590,12 @@ bool read_manual_grenade_render_state(
 }
 
 void request_manual_grenade_shutdown() noexcept {
+#if defined(_MSC_VER) && defined(_M_IX86)
+    // Installed CALL adapters retain immutable native pass-through targets.
+    // Shutdown stops observation; it does not authorize or clear event queues.
+    g_grenade_native_observer_enabled.store(false, std::memory_order_release);
+    g_grenade_queue_observer_enabled.store(false, std::memory_order_release);
+#endif
     g_enabled.store(false, std::memory_order_release);
     g_native_command_policy.store(
         NativeGrenadeCommandPolicy::passthrough,

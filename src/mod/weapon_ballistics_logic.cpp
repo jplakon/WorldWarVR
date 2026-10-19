@@ -10,6 +10,12 @@ bool hitscan_uses_tag_flash_forward(
     const std::string_view internal_weapon_name) noexcept {
     return internal_weapon_name == "ppsh" || internal_weapon_name == "svt40";
 }
+CalibratedRifleAsset calibrated_rifle_asset_for_identity(
+    std::string_view weapon,std::string_view model) noexcept {
+    if (weapon=="m1garand"&&model=="viewmodel_usa_m1garand_rifle") return CalibratedRifleAsset::garand;
+    if (weapon=="mosin_rifle"&&model=="viewmodel_rus_mosinnagant_rifle") return CalibratedRifleAsset::mosin;
+    return CalibratedRifleAsset::none;
+}
 
 namespace {
 

@@ -1,0 +1,9 @@
+# Keep ordinary template text canonically normalized, but preserve the exact
+# reviewed native input bytes in both Git and the complete source archive.
+* text=auto
+/src/** -text
+/launcher/** -text
+/CMakeLists.txt -text
+/.gitmodules -text
+/LICENSE -text
+/THIRD-PARTY-NOTICES.md -text

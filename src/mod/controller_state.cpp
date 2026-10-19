@@ -58,70 +58,12 @@ bool update_publication_weapon_pose(
     const std::uint64_t publication_milliseconds,
     ControllerWeaponPoseFilterState* const state,
     PublishedControllerWeaponPose* const output) noexcept {
-    if (state == nullptr || output == nullptr || generation == 0 ||
-        !hand.grip.active || !hand.grip.position_valid ||
-        !hand.aim.active || !hand.aim.orientation_valid ||
-        !finite(hand.grip.pose.position.x) ||
-        !finite(hand.grip.pose.position.y) ||
-        !finite(hand.grip.pose.position.z)) return false;
-    auto target = hand.aim.pose.orientation;
-    if (!normalize(&target)) return false;
-
-    auto next = *state;
-    if (!next.valid) {
-        next.valid = true; next.generation = generation;
-        next.publication_milliseconds = publication_milliseconds;
-        next.filtered_grip_position = hand.grip.pose.position;
-        next.filtered_aim_orientation = target;
-    } else {
-        const auto delta = wawvr::xr::Vec3f{
-            hand.grip.pose.position.x - next.filtered_grip_position.x,
-            hand.grip.pose.position.y - next.filtered_grip_position.y,
-            hand.grip.pose.position.z - next.filtered_grip_position.z};
-        const float distance_squared =
-            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-        const float raw_dot = std::abs(
-            next.filtered_aim_orientation.x * target.x +
-            next.filtered_aim_orientation.y * target.y +
-            next.filtered_aim_orientation.z * target.z +
-            next.filtered_aim_orientation.w * target.w);
-        constexpr float kRadiansToDegrees = 57.2957795131F;
-        const float angle = 2.0F *
-            std::acos(std::clamp(raw_dot, 0.0F, 1.0F)) * kRadiansToDegrees;
-        if (!finite(distance_squared) || distance_squared >
-                kMaximumWeaponPositionDiscontinuityMeters *
-                kMaximumWeaponPositionDiscontinuityMeters ||
-            !finite(angle) ||
-            angle > kMaximumWeaponOrientationDiscontinuityDegrees) return false;
-        const float position_response = adaptive_weapon_position_response(
-            std::sqrt(distance_squared));
-        const float orientation_response =
-            adaptive_weapon_orientation_response(angle);
-        next.filtered_grip_position.x += delta.x * position_response;
-        next.filtered_grip_position.y += delta.y * position_response;
-        next.filtered_grip_position.z += delta.z * position_response;
-        const float dot = next.filtered_aim_orientation.x * target.x +
-            next.filtered_aim_orientation.y * target.y +
-            next.filtered_aim_orientation.z * target.z +
-            next.filtered_aim_orientation.w * target.w;
-        if (dot < 0.0F) { target.x=-target.x; target.y=-target.y;
-            target.z=-target.z; target.w=-target.w; }
-        next.filtered_aim_orientation.x +=
-            (target.x-next.filtered_aim_orientation.x)*orientation_response;
-        next.filtered_aim_orientation.y +=
-            (target.y-next.filtered_aim_orientation.y)*orientation_response;
-        next.filtered_aim_orientation.z +=
-            (target.z-next.filtered_aim_orientation.z)*orientation_response;
-        next.filtered_aim_orientation.w +=
-            (target.w-next.filtered_aim_orientation.w)*orientation_response;
-        if (!normalize(&next.filtered_aim_orientation)) return false;
-        next.generation = generation;
-        next.publication_milliseconds = publication_milliseconds;
-    }
-    *state = next;
+    if (output == nullptr ||
+        !update_publication_controller_weapon_pose_filter(
+            hand, generation, publication_milliseconds, state)) return false;
     output->valid = true;
-    output->filtered_grip_position = next.filtered_grip_position;
-    output->filtered_aim_orientation = next.filtered_aim_orientation;
+    output->filtered_grip_position = state->filtered_grip_position;
+    output->filtered_aim_orientation = state->filtered_aim_orientation;
     return true;
 }
 
@@ -194,6 +136,34 @@ void reset_controller_weapon_publication_filters() noexcept {
     g_publication_weapon_filters = {};
     g_current_head_local_publication_weapon_filters = {};
     ReleaseSRWLockExclusive(&g_controller_frame_lock);
+}
+
+bool recover_unheld_controller_publication(
+    const UnheldControllerPublicationRecovery& ownership,
+    const std::uint64_t expected_generation,
+    const wawvr::xr::Hand hand,
+    const std::uint64_t now_milliseconds) noexcept {
+    const auto index=static_cast<std::uint32_t>(hand);
+    if (!ownership.current_weapon_available || !ownership.committed_chest ||
+        ownership.retained_controller_owner || ownership.nested_controller_owner ||
+        expected_generation==0 || index>=wawvr::xr::kHandCount) return false;
+
+    TrackingAnchorSyncLock sync(tracking_anchor_sync_mutex());
+    AcquireSRWLockExclusive(&g_controller_frame_lock);
+    ControllerWeaponPose raw{};
+    const bool recovery_allowed=g_controller_frame_available &&
+        g_controller_frame.generation==expected_generation &&
+        !g_controller_frame.weapon_poses[index].valid &&
+        g_publication_weapon_filters[index].valid &&
+        controller_weapon_pose(g_controller_frame,hand,now_milliseconds,&raw);
+    if (recovery_allowed) {
+        // Do not rewrite g_controller_frame or another hand's accepted filter.
+        // Only the next actual publisher may create a usable receipt.
+        g_publication_weapon_filters[index]={};
+        g_current_head_local_publication_weapon_filters[index]={};
+    }
+    ReleaseSRWLockExclusive(&g_controller_frame_lock);
+    return recovery_allowed;
 }
 
 void discard_controller_tracking_anchor_rebase() noexcept {

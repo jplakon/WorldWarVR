@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 
@@ -36,6 +37,68 @@ constexpr float kRadiansToDegrees =
 
 [[nodiscard]] bool finite_vector(const wawvr::xr::Vec3f& value) noexcept {
     return finite(value.x) && finite(value.y) && finite(value.z);
+}
+
+// The fixed single-hand history is shared by empty-hand swings and held-pistol
+// strikes. A valid endpoint jump is not itself evidence of a sampled attack.
+// Keep the pistol's authored aim-direction test optional: a free lateral swing
+// must not inherit the pistol-forward restriction.
+[[nodiscard]] bool observed_single_hand_motion(
+    const PhysicalMeleeState& state,
+    const HeldPistolMeleeSample& origin,
+    const HeldPistolMeleeSample& current,
+    const wawvr::xr::Vec3f& travel,
+    const float travel_meters,
+    const wawvr::xr::Vec3f* const pistol_forward) noexcept {
+    constexpr float half_travel=kPhysicalMeleeMinimumTravelMeters*0.5F;
+    constexpr float half_world=kPhysicalMeleeMinimumWorldTravelMeters*0.5F;
+    const auto capacity=static_cast<std::uint32_t>(state.held_pistol_samples.size());
+    const auto first=(state.held_pistol_next_sample+capacity-
+                      state.held_pistol_sample_count)%capacity;
+    for (std::uint32_t index=0;index<state.held_pistol_sample_count;++index) {
+        const auto& middle=state.held_pistol_samples[(first+index)%capacity];
+        if (middle.milliseconds<=origin.milliseconds ||
+            middle.milliseconds>=current.milliseconds) continue;
+        const wawvr::xr::Vec3f before{
+            middle.hand_relative_to_head.x-origin.hand_relative_to_head.x,
+            middle.hand_relative_to_head.y-origin.hand_relative_to_head.y,
+            middle.hand_relative_to_head.z-origin.hand_relative_to_head.z};
+        const wawvr::xr::Vec3f after{
+            current.hand_relative_to_head.x-middle.hand_relative_to_head.x,
+            current.hand_relative_to_head.y-middle.hand_relative_to_head.y,
+            current.hand_relative_to_head.z-middle.hand_relative_to_head.z};
+        const wawvr::xr::Vec3f world_before{
+            middle.hand_position.x-origin.hand_position.x,
+            middle.hand_position.y-origin.hand_position.y,
+            middle.hand_position.z-origin.hand_position.z};
+        const wawvr::xr::Vec3f world_after{
+            current.hand_position.x-middle.hand_position.x,
+            current.hand_position.y-middle.hand_position.y,
+            current.hand_position.z-middle.hand_position.z};
+        const auto witnessed_segment=[&](const wawvr::xr::Vec3f& segment,
+            const wawvr::xr::Vec3f& world_segment) noexcept {
+            const float squared=dot(segment,segment);
+            const float world_squared=dot(world_segment,world_segment);
+            if (!finite(squared) || !finite(world_squared) ||
+                squared<half_travel*half_travel ||
+                world_squared<half_world*half_world) return false;
+            const float meters=std::sqrt(squared);
+            const float world_meters=std::sqrt(world_squared);
+            const float along=dot(segment,travel)/travel_meters;
+            const float correlation=dot(segment,world_segment)/(meters*world_meters);
+            if (!finite(along) || !finite(correlation) || along<half_travel ||
+                correlation<kPhysicalMeleeMinimumWorldDirectionCorrelation) return false;
+            if (pistol_forward!=nullptr) {
+                const float forward=dot(segment,*pistol_forward)/meters;
+                if (!finite(forward) || forward<kPhysicalMeleeMinimumForwardFraction)
+                    return false;
+            }
+            return true;
+        };
+        if (witnessed_segment(before,world_before) &&
+            witnessed_segment(after,world_after)) return true;
+    }
+    return false;
 }
 
 void update_melee_grip_latch(
@@ -174,6 +237,51 @@ bool controller_frame_is_current(
     }
     return now_milliseconds - snapshot.publication_milliseconds <=
            kMaximumControllerFrameAgeMilliseconds;
+}
+
+bool right_stick_melee_from_setting(const std::wstring_view value) noexcept {
+    return value == L"1";
+}
+
+bool update_right_stick_melee(
+    const bool enabled,
+    const bool input_owned,
+    const bool interaction_reserved,
+    const std::uint64_t action_sequence,
+    const wawvr::xr::BoolActionState& stick_click,
+    RightStickMeleeState* const state) noexcept {
+    if (state == nullptr) {
+        return false;
+    }
+    if (!enabled || !input_owned || interaction_reserved ||
+        action_sequence == 0 || !stick_click.active) {
+        reset_right_stick_melee(state);
+        return false;
+    }
+    if (!state->input_was_owned ||
+        action_sequence < state->last_action_sequence) {
+        state->input_was_owned = true;
+        state->last_action_sequence = action_sequence;
+        state->armed = !stick_click.current;
+        return false;
+    }
+    if (action_sequence == state->last_action_sequence) {
+        return false;
+    }
+    state->last_action_sequence = action_sequence;
+    if (!stick_click.current) {
+        state->armed = true;
+        return false;
+    }
+    const bool pressed = state->armed;
+    state->armed = false;
+    return pressed;
+}
+
+void reset_right_stick_melee(RightStickMeleeState* const state) noexcept {
+    if (state != nullptr) {
+        *state = {};
+    }
 }
 
 bool controller_aim_degrees(
@@ -485,7 +593,8 @@ bool update_sprint_latch(
     const std::uint64_t action_sequence,
     const wawvr::xr::Vec2ActionState& movement_stick,
     const wawvr::xr::BoolActionState& stick_click,
-    SprintLatchState* const state) noexcept {
+    SprintLatchState* const state,
+    const std::uint64_t now_milliseconds) noexcept {
     if (state == nullptr) {
         return false;
     }
@@ -500,6 +609,8 @@ bool update_sprint_latch(
         state->click_was_held = click_held;
         state->latched = false;
         state->last_action_sequence = action_sequence;
+        state->pending_until_milliseconds = 0;
+        state->neutral_since_milliseconds = 0;
         return false;
     }
 
@@ -524,15 +635,48 @@ bool update_sprint_latch(
     // Several native usercmds may consume one published OpenXR action frame.
     // Update the physical edge only once for each action sequence.
     if (action_sequence != state->last_action_sequence) {
-        if (click_held && !state->click_was_held && locomotion_held) {
-            state->latched = true;
+        if (click_held && !state->click_was_held) {
+            if (locomotion_held) {
+                state->latched = true;
+                state->pending_until_milliseconds = 0;
+            } else if (now_milliseconds != 0 &&
+                       now_milliseconds <=
+                           (std::numeric_limits<std::uint64_t>::max)() -
+                               kSprintClickPreMovementMilliseconds) {
+                // A normal click often arrives one XR frame before the stick
+                // leaves centre. Queue only that fresh edge for a short,
+                // bounded interval; never keep an indefinite auto-sprint arm.
+                state->pending_until_milliseconds = now_milliseconds +
+                    kSprintClickPreMovementMilliseconds;
+            }
         }
         state->click_was_held = click_held;
         state->last_action_sequence = action_sequence;
     }
-    if (!locomotion_held) {
-        state->latched = false;
+    if (state->pending_until_milliseconds != 0) {
+        if (now_milliseconds == 0 ||
+            now_milliseconds > state->pending_until_milliseconds) {
+            state->pending_until_milliseconds = 0;
+        } else if (locomotion_held) {
+            state->latched = true;
+            state->pending_until_milliseconds = 0;
+        }
     }
+    if (!locomotion_held) {
+        if (now_milliseconds == 0) {
+            state->latched = false;
+        } else if (state->neutral_since_milliseconds == 0) {
+            state->neutral_since_milliseconds = now_milliseconds;
+        } else if (now_milliseconds < state->neutral_since_milliseconds ||
+                   now_milliseconds - state->neutral_since_milliseconds >=
+                       kSprintNeutralGraceMilliseconds) {
+            state->latched = false;
+        }
+        // No sprint bit is submitted while actually centred. The small grace
+        // only protects a click/deflection from one noisy neutral sample.
+        return false;
+    }
+    state->neutral_since_milliseconds = 0;
     return state->latched;
 }
 
@@ -540,6 +684,98 @@ void reset_sprint_latch(SprintLatchState* const state) noexcept {
     if (state != nullptr) {
         *state = {};
     }
+}
+
+template <typename Command>
+bool apply_controller_sprint_request_impl(
+    Command& command, const bool requested,
+    const bool native_ads_before_vr) noexcept {
+    if (!requested) {
+        return false;
+    }
+    const auto before = command.buttons;
+    if (!native_ads_before_vr) {
+        command.buttons &= ~wawvr::t4::button_mask(
+            wawvr::t4::UsercmdButton::aim_down_sights);
+    }
+    wawvr::t4::add_button(command, wawvr::t4::UsercmdButton::sprint);
+    return command.buttons != before;
+}
+
+bool apply_controller_sprint_request(
+    wawvr::t4::UsercmdSp& command, const bool requested,
+    const bool native_ads_before_vr) noexcept {
+    return apply_controller_sprint_request_impl(command, requested, native_ads_before_vr);
+}
+
+bool apply_controller_sprint_request(
+    wawvr::t4::UsercmdMp& command, const bool requested,
+    const bool native_ads_before_vr) noexcept {
+    return apply_controller_sprint_request_impl(command, requested, native_ads_before_vr);
+}
+
+RefdefMotionTelemetry sample_refdef_motion_telemetry(
+    const bool gameplay_owned, const wawvr::xr::Vec3f& origin,
+    const std::uint64_t now_milliseconds,
+    RefdefMotionTelemetryState* const state) noexcept {
+    RefdefMotionTelemetry result{};
+    if (state == nullptr) {
+        return result;
+    }
+    if (!gameplay_owned || !finite_vector(origin) || now_milliseconds == 0) {
+        *state = {};
+        return result;
+    }
+    if (!state->initialized || now_milliseconds <= state->previous_milliseconds ||
+        now_milliseconds - state->previous_milliseconds > 1'000) {
+        *state = {true, origin, now_milliseconds};
+        return result;
+    }
+    const auto elapsed = now_milliseconds - state->previous_milliseconds;
+    if (elapsed < 50) {
+        return result;
+    }
+    const double dx = static_cast<double>(origin.x) - state->previous_origin.x;
+    const double dy = static_cast<double>(origin.y) - state->previous_origin.y;
+    const double distance = std::hypot(dx, dy);
+    const double speed = distance * 1'000.0 / static_cast<double>(elapsed);
+    *state = {true, origin, now_milliseconds};
+    if (!std::isfinite(speed) || speed > 2'000.0) {
+        return result;
+    }
+    result.valid = true;
+    result.horizontal_distance_units = static_cast<float>(distance);
+    result.horizontal_speed_units_per_second = static_cast<float>(speed);
+    result.elapsed_milliseconds = elapsed;
+    return result;
+}
+
+NativeSpSprintObservation decode_native_sp_sprint_observation(
+    const std::span<const std::byte> player_state) noexcept {
+    NativeSpSprintObservation result{};
+    if (player_state.size() < kNativeSpSprintObservationSpan) return result;
+    const auto read = [&](const std::size_t offset, auto* output) noexcept {
+        std::memcpy(output, player_state.data() + offset, sizeof(*output));
+    };
+    read(0x00, &result.command_time);
+    read(0x0C, &result.pm_flags);
+    read(0x20, &result.origin);
+    read(0x2C, &result.velocity);
+    read(0x880, &result.button_up_required);
+    read(0x884, &result.delay);
+    read(0x888, &result.last_start);
+    read(0x88C, &result.last_end);
+    read(0x890, &result.start_max_length);
+    const double speed = std::hypot(
+        static_cast<double>(result.velocity.x),
+        static_cast<double>(result.velocity.y));
+    if (!finite_vector(result.origin) || !finite_vector(result.velocity) ||
+        !std::isfinite(speed) || speed > 10'000.0 ||
+        (result.button_up_required != 0 && result.button_up_required != 1) ||
+        (result.delay != 0 && result.delay != 1)) return {};
+    result.horizontal_speed_units_per_second = static_cast<float>(speed);
+    result.valid = true;
+    return result;
 }
 
 PhysicalMeleeGesture update_physical_melee_gesture(
@@ -606,6 +842,8 @@ PhysicalMeleeGesture update_physical_melee_gesture(
     if (snapshot.frame.actions.sequence == state->last_action_sequence) {
         return PhysicalMeleeGesture::none;
     }
+    const bool single_hand_sequence_reversed = !two_hand_weapon_held &&
+        snapshot.frame.actions.sequence < state->last_action_sequence;
     state->last_action_sequence = snapshot.frame.actions.sequence;
 
     const wawvr::xr::Vec3f relative{
@@ -645,7 +883,7 @@ PhysicalMeleeGesture update_physical_melee_gesture(
         }
     }
 
-    const auto append_pistol_sample = [&]() noexcept {
+    const auto append_single_hand_sample = [&]() noexcept {
         const auto capacity = static_cast<std::uint32_t>(
             state->held_pistol_samples.size());
         state->held_pistol_samples[state->held_pistol_next_sample] = {
@@ -675,13 +913,14 @@ PhysicalMeleeGesture update_physical_melee_gesture(
         state->gesture_origin_milliseconds = sample_milliseconds;
         state->held_pistol_sample_count = 0;
         state->held_pistol_next_sample = 0;
-        if (right_hand_pistol_held) {
-            append_pistol_sample();
+        if (!two_hand_weapon_held) {
+            append_single_hand_sample();
         }
     };
     if (!state->input_was_owned || !state->pose_was_valid ||
         two_hand_weapon_held != state->two_hand_weapon_was_held ||
         held_pistol_identity != state->held_pistol_identity ||
+        single_hand_sequence_reversed ||
         sample_milliseconds < state->gesture_origin_milliseconds ||
         (!right_hand_pistol_held &&
          sample_milliseconds == state->gesture_origin_milliseconds)) {
@@ -700,11 +939,9 @@ PhysicalMeleeGesture update_physical_melee_gesture(
         return PhysicalMeleeGesture::none;
     }
 
-    if (right_hand_pistol_held) {
-        // An idle fixed origin can make a fast stab look slow, then discard
-        // the rest of it at the 150 ms boundary. Evaluate recent real samples
-        // instead. All permission/trigger/cooldown transitions above still
-        // clear this history; none of those motions can be replayed later.
+    if (!two_hand_weapon_held) {
+        // Only fresh, ordered observations may become middle-sample evidence.
+        // Permission, trigger and cooldown boundaries above clear both modes.
         const auto capacity = static_cast<std::uint32_t>(
             state->held_pistol_samples.size());
         if (state->held_pistol_sample_count == 0) {
@@ -741,9 +978,17 @@ PhysicalMeleeGesture update_physical_melee_gesture(
             establish_gesture_origin();
             return PhysicalMeleeGesture::none;
         }
+    }
+
+    if (right_hand_pistol_held) {
+        // An idle fixed origin can make a fast stab look slow, then discard
+        // the rest of it at the 150 ms boundary. Evaluate recent real samples
+        // instead. Preserve the existing held-pistol window and aim semantics.
+        const auto capacity = static_cast<std::uint32_t>(
+            state->held_pistol_samples.size());
         const auto forward = wawvr::xr::Rotate(
             right.aim.pose.orientation, {0.0F, 0.0F, -1.0F});
-        const float radius = std::sqrt(radius_squared);
+        const float radius = std::sqrt(dot(relative, relative));
         while (state->held_pistol_sample_count > 0) {
             const auto oldest = (state->held_pistol_next_sample + capacity -
                                  state->held_pistol_sample_count) % capacity;
@@ -805,6 +1050,9 @@ PhysicalMeleeGesture update_physical_melee_gesture(
                 forward_fraction < kPhysicalMeleeMinimumForwardFraction) {
                 continue;
             }
+            if (!observed_single_hand_motion(*state,origin,
+                    {relative,right.grip.pose.position,sample_milliseconds},
+                    travel,travel_meters,&forward)) continue;
             state->last_trigger_relative_travel_meters = travel_meters;
             state->last_trigger_world_travel_meters = world_meters;
             state->last_trigger_speed_meters_per_second = speed;
@@ -814,10 +1062,11 @@ PhysicalMeleeGesture update_physical_melee_gesture(
             establish_gesture_origin();
             return PhysicalMeleeGesture::right_hand_pistol_strike;
         }
-        append_pistol_sample();
+        append_single_hand_sample();
         return PhysicalMeleeGesture::none;
     }
 
+    if (!two_hand_weapon_held) append_single_hand_sample();
     const std::uint64_t elapsed_milliseconds =
         sample_milliseconds - state->gesture_origin_milliseconds;
     if (elapsed_milliseconds > kPhysicalMeleeMaximumSampleMilliseconds) {
@@ -999,6 +1248,14 @@ PhysicalMeleeGesture update_physical_melee_gesture(
         return PhysicalMeleeGesture::none;
     }
 
+    if (!two_hand_weapon_held && !observed_single_hand_motion(*state,
+            {state->gesture_origin_hand_relative_to_head,
+             state->gesture_origin_hand_position,state->gesture_origin_milliseconds},
+            {relative,right.grip.pose.position,sample_milliseconds},
+            travel,travel_meters,nullptr)) {
+        return PhysicalMeleeGesture::none;
+    }
+
     state->last_trigger_relative_travel_meters = travel_meters;
     state->last_trigger_world_travel_meters = world_travel_meters;
     state->last_trigger_speed_meters_per_second = speed;
@@ -1095,7 +1352,8 @@ ControllerInputResult apply_controller_input_impl(
     Command& command,
     const ControllerFrameSnapshot& snapshot,
     const wawvr::xr::Basis3f& camera_axis,
-    const std::uint64_t now_milliseconds) noexcept {
+    const std::uint64_t now_milliseconds,
+    const bool right_stick_melee_pressed) noexcept {
     ControllerInputResult result{};
     if (!controller_frame_is_current(snapshot, now_milliseconds)) {
         return result;
@@ -1154,8 +1412,8 @@ ControllerInputResult apply_controller_input_impl(
            wawvr::t4::UsercmdButton::reload);
     add_if(command, bool_held(left.primary),
            wawvr::t4::UsercmdButton::use);
-    add_if(command, bool_held(left.stick_click),
-           wawvr::t4::UsercmdButton::sprint);
+    // Sprint is owned by the edge/latch policy in the post-build hook. A raw
+    // held L3 must not bypass its ownership and recovery baseline here.
     // When the runtime cannot expose a Menu action (SteamVR reserves Quest's
     // physical Menu button for its dashboard), B is the pause/back fallback.
     // Do not also inject a crouch on the frame that opens the pause menu.
@@ -1169,7 +1427,8 @@ ControllerInputResult apply_controller_input_impl(
         left.squeeze.current >= kWeaponGripEngage;
     add_if(command, right_gripping && left_supporting,
            wawvr::t4::UsercmdButton::aim_down_sights);
-    const bool melee_held = bool_held(right.stick_click);
+    const bool melee_held =
+        right_stick_melee_pressed && bool_held(right.stick_click);
     add_if(command, melee_held, wawvr::t4::UsercmdButton::melee);
     result.melee_button_held = melee_held;
     if constexpr (std::is_same_v<Command, wawvr::t4::UsercmdSp>) {
@@ -1240,18 +1499,22 @@ ControllerInputResult apply_controller_input(
     wawvr::t4::UsercmdSp& command,
     const ControllerFrameSnapshot& snapshot,
     const wawvr::xr::Basis3f& camera_axis,
-    const std::uint64_t now_milliseconds) noexcept {
+    const std::uint64_t now_milliseconds,
+    const bool right_stick_melee_pressed) noexcept {
     return apply_controller_input_impl(
-        command, snapshot, camera_axis, now_milliseconds);
+        command, snapshot, camera_axis, now_milliseconds,
+        right_stick_melee_pressed);
 }
 
 ControllerInputResult apply_controller_input(
     wawvr::t4::UsercmdMp& command,
     const ControllerFrameSnapshot& snapshot,
     const wawvr::xr::Basis3f& camera_axis,
-    const std::uint64_t now_milliseconds) noexcept {
+    const std::uint64_t now_milliseconds,
+    const bool right_stick_melee_pressed) noexcept {
     return apply_controller_input_impl(
-        command, snapshot, camera_axis, now_milliseconds);
+        command, snapshot, camera_axis, now_milliseconds,
+        right_stick_melee_pressed);
 }
 
 }  // namespace wawvr::mod
