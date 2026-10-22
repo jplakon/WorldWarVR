@@ -27,11 +27,12 @@ The UI resolves its support files through `AppContext.BaseDirectory`; published 
 
 Follow `docs/MANUAL_RELEASE.md` and the release checklist. Keep one version in
 launcher metadata, release filenames, source snapshot, and tag. The current
-release is `v0.4.0-beta.5`. Its gameplay DLL is retained from the tested foliage
-and interaction candidate; the managed launcher is rebuilt with beta.5 version
-metadata from frozen beta.4 logic. The native helper remains byte-identical to
-beta.4. Record those boundaries and the partial foliage improvement acceptance
-in build evidence; do not infer new all-headset compatibility.
+release is `v0.4.0-beta.7`. Its gameplay DLL is retained from the accepted jungle
+foliage candidate; the managed launcher is rebuilt with beta.7 version/source
+metadata from frozen beta.6 behavior. The native helper remains byte-identical
+to the previously accepted production helper. Record those boundaries and the
+targeted foliage acceptance in build evidence; do not infer higher FPS or new
+all-headset compatibility. See `release/COMPONENT-SOURCE-beta7.md`.
 
 The public GitHub release contains:
 

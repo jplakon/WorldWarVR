@@ -70,6 +70,16 @@ struct TerminalSurfaceIdentity {
     std::uint32_t surfaces{};
     std::uint16_t count{},first{};
 };
+struct FullSurfaceIdentity {
+    bool enabled{};
+    bool variant01{};
+    const FullFoliageProfile* profile{};
+    std::uint32_t material_array{};
+    std::array<std::uint32_t,kMaximumProfileLods> ranges{},spans{};
+    std::array<std::uint16_t,kMaximumProfileSurfaces> vertices{},triangles{};
+    std::array<std::uint32_t,kMaximumProfileSurfaces> materials{},name_addresses{};
+    std::array<std::string,kMaximumProfileSurfaces> names;
+};
 struct Model {
     std::uintptr_t address{}, name_address{}, terminal{};
     std::string name;
@@ -77,6 +87,9 @@ struct Model {
     std::uint16_t lod_count{};
     std::uint8_t surface_count{};
     TerminalSurfaceIdentity terminal_mesh{};
+    bool allow_groundcover_extension{};
+    bool allow_dense_retention{};
+    FullSurfaceIdentity near_mesh,canopy_mesh;
 };
 struct Cache {
     std::uintptr_t world{}, instances{}, world_name{};
@@ -87,6 +100,8 @@ struct Cache {
 thread_local Cache g_cache;
 thread_local bool g_active{};
 thread_local std::uint32_t g_cull_changes{}, g_range_changes{}, g_retained_culls{}, g_retained_ranges{}, g_reports{};
+thread_local std::uint32_t g_near_changes{};
+thread_local std::uint32_t g_canopy_changes{};
 bool current_world(std::uintptr_t& world, std::uintptr_t& instances, std::uint32_t& count) noexcept {
 #if defined(_MSC_VER)
     // No shared fields are mutated. Cheap guarded reads fail closed if a world
@@ -128,6 +143,40 @@ bool terminal_surface_valid(std::uintptr_t model, std::uint16_t lod_count, std::
     faulted=true;return false;
 #endif
 }
+bool capture_full_identity(Model& model,const FullFoliageProfile* profile,FullSurfaceIdentity& destination) {
+    if (!profile || model.lod_count!=profile->lod_count || model.surface_count!=profile->surface_count) return true;
+    FullSurfaceIdentity next;
+    for (unsigned lod=0;lod<profile->lod_count;++lod) {
+        if (!guarded_read(model.address+0x28+lod*0x1C,next.ranges[lod]) ||
+            !guarded_read(model.address+0x2C+lod*0x1C,next.spans[lod])) return false;
+    }
+    if (!guarded_read(model.address+0x24,next.material_array) ||
+        !accessible(reinterpret_cast<void*>(next.material_array),profile->surface_count*4) ||
+        !guarded_copy(next.material_array,next.materials.data(),profile->surface_count*4)) return false;
+    std::array<std::string_view,kMaximumProfileSurfaces> names{};
+    for (unsigned surface=0;surface<profile->surface_count;++surface) {
+        const auto address=model.terminal_mesh.surfaces+surface*0x40;
+        if (!guarded_read(address+2,next.vertices[surface]) ||
+            !guarded_read(address+4,next.triangles[surface]) ||
+            !guarded_read(next.materials[surface],next.name_addresses[surface]) ||
+            !copy_name(next.name_addresses[surface],next.names[surface])) return false;
+        names[surface]=next.names[surface];
+    }
+    next.enabled=full_foliage_profile_matches(*profile,model.name,model.lod_count,model.surface_count,
+        next.ranges,next.spans,next.vertices,next.triangles,names);
+    next.variant01=model.name==kShrubNearVariantModel;
+    next.profile=next.enabled?profile:nullptr;
+    if (next.enabled) destination=std::move(next);
+    return true;
+}
+bool capture_near_identity(Model& model) {
+    const bool result=capture_full_identity(model,find_foliage_profile(model.name,FoliageRetention::dense),model.near_mesh);
+    model.allow_dense_retention=result && model.near_mesh.enabled;
+    return result;
+}
+bool capture_canopy_identity(Model& model) {
+    return capture_full_identity(model,find_foliage_profile(model.name,FoliageRetention::canopy),model.canopy_mesh);
+}
 bool build_cache(std::uintptr_t world, std::uintptr_t instances, std::uint32_t count) {
     if (!accessible(reinterpret_cast<void*>(world),0x2B4)) return false;
     if (!accessible(reinterpret_cast<void*>(instances),count*kInstanceStride)) return false;
@@ -152,7 +201,8 @@ bool build_cache(std::uintptr_t world, std::uintptr_t instances, std::uint32_t c
             !guarded_read(model + 6,candidate.surface_count)) return false;
         candidate.name_address = name_pointer;
         if (!copy_name(candidate.name_address, candidate.name)) return false;
-        if (!foliage_model_is_groundcover(candidate.name) || candidate.lod_count < 1 ||
+        candidate.allow_groundcover_extension=foliage_model_is_groundcover(candidate.name);
+        if ((!candidate.allow_groundcover_extension && !find_foliage_profile(candidate.name,FoliageRetention::canopy)) || candidate.lod_count < 1 ||
             candidate.lod_count > 4 || !candidate.surface_count) continue;
         bool surface_fault{};
         if (!terminal_surface_valid(model,candidate.lod_count,candidate.surface_count,candidate.terminal_mesh,surface_fault)) {
@@ -170,12 +220,45 @@ bool build_cache(std::uintptr_t world, std::uintptr_t instances, std::uint32_t c
         candidate.terminal = model + 0x28 + (candidate.lod_count - 1U) * 0x1C;
         if (!guarded_read(candidate.terminal,candidate.terminal_bits)) return false;
         if (!ordered || select_extended_foliage_terminal_range_bits(candidate.terminal_bits, true) == candidate.terminal_bits) continue;
+        if (!capture_near_identity(candidate) || !capture_canopy_identity(candidate)) return false;
+        if (!candidate.allow_groundcover_extension && !candidate.canopy_mesh.enabled) continue;
         next.models.push_back(std::move(candidate));
     }
     std::ranges::sort(next.models, {}, &Model::address); g_cache = std::move(next);
-    stereo_diagnostic_log("FoliageDiag cache: world=%s instances=%u groundcoverModels=%zu shortCullCap=2000 terminalFactor=4 nearLods=unchanged sharedWrites=0",
-        g_cache.name.c_str(), g_cache.count, g_cache.models.size());
+    const auto near_count=std::ranges::count_if(g_cache.models,[](const Model& model){return model.near_mesh.enabled;});
+    const auto canopy_count=std::ranges::count_if(g_cache.models,[](const Model& model){return model.canopy_mesh.enabled;});
+    const auto groundcover_count=std::ranges::count_if(g_cache.models,[](const Model& model){return model.allow_groundcover_extension;});
+    stereo_diagnostic_log("FoliageDiag cache: world=%s instances=%u groundcoverModels=%zu shortCullCap=8000 terminalFactor=4 denseModels=%zu denseLod=0 denseEndpoint=currentTerminal canopyModels=%zu canopyLods=profile canopyCull=unchanged sharedWrites=0",
+        g_cache.name.c_str(), g_cache.count,static_cast<std::size_t>(groundcover_count),static_cast<std::size_t>(near_count),static_cast<std::size_t>(canopy_count));
     return true;
+}
+bool guarded_full_identity(const Model& model,const FullSurfaceIdentity& identity) noexcept {
+    if (!identity.enabled) return true;
+    if(!identity.profile || identity.profile->lod_count!=model.lod_count || identity.profile->surface_count!=model.surface_count) return false;
+#if defined(_MSC_VER)
+    __try {
+        if (read<std::uint32_t>(model.address+0x24)!=identity.material_array) return false;
+        for (unsigned lod=0;lod<identity.profile->lod_count;++lod) {
+            if (read<std::uint32_t>(model.address+0x28+lod*0x1C)!=identity.ranges[lod] ||
+                read<std::uint32_t>(model.address+0x2C+lod*0x1C)!=identity.spans[lod]) return false;
+        }
+        for (unsigned surface=0;surface<identity.profile->surface_count;++surface) {
+            const auto address=model.terminal_mesh.surfaces+surface*0x40;
+            if (read<std::uint16_t>(address+2)!=identity.vertices[surface] ||
+                read<std::uint16_t>(address+4)!=identity.triangles[surface] ||
+                read<std::uint32_t>(identity.material_array+surface*4)!=identity.materials[surface] ||
+                read<std::uint32_t>(identity.materials[surface])!=identity.name_addresses[surface] ||
+                std::memcmp(reinterpret_cast<void*>(identity.name_addresses[surface]),identity.names[surface].c_str(),identity.names[surface].size()+1)) return false;
+        }
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+#else
+    return false;
+#endif
+}
+bool guarded_near_identity(const Model& model) noexcept { return guarded_full_identity(model,model.near_mesh); }
+bool guarded_canopy_identity(const Model& model) noexcept {
+    return guarded_full_identity(model,model.canopy_mesh);
 }
 bool guarded_identity(const Model& model) noexcept {
 #if defined(_MSC_VER)
@@ -187,7 +270,8 @@ bool guarded_identity(const Model& model) noexcept {
             read<std::uint32_t>(model.address + 0x20) == model.terminal_mesh.surfaces &&
             read<std::uint16_t>(model.terminal + 4) == model.terminal_mesh.count &&
             read<std::uint16_t>(model.terminal + 6) == model.terminal_mesh.first &&
-            !std::memcmp(reinterpret_cast<void*>(model.name_address),model.name.c_str(),model.name.size()+1);
+            !std::memcmp(reinterpret_cast<void*>(model.name_address),model.name.c_str(),model.name.size()+1) &&
+            guarded_near_identity(model) && guarded_canopy_identity(model);
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 #else
     return false;
@@ -284,7 +368,8 @@ extern "C" std::uintptr_t wawvr_foliage_cull_fail = 0x00732B7Fu;
 extern "C" std::uintptr_t wawvr_foliage_range_continue = 0x00732CDDu;
 extern "C" std::uint32_t __cdecl wawvr_select_foliage_cull_bits(std::uintptr_t model, std::uint32_t original,
     std::uint32_t distance) noexcept {
-    const auto selected = select_extended_foliage_cull_distance_bits(original,g_active && find_model(model));
+    const auto* target=g_active?find_model(model):nullptr;
+    const auto selected = select_extended_foliage_cull_distance_bits(original,target && target->allow_groundcover_extension);
     if (g_identity_diagnostic) return original;
     if (selected != original) {
         ++g_cull_changes;
@@ -293,11 +378,29 @@ extern "C" std::uint32_t __cdecl wawvr_select_foliage_cull_bits(std::uintptr_t m
     return selected;
 }
 extern "C" std::uint32_t __cdecl wawvr_select_foliage_range_bits(std::uintptr_t model, std::uintptr_t range,
-    std::uint32_t original, std::uint32_t distance, std::uint32_t instance_cull) noexcept {
+    std::uint32_t original, std::uint32_t distance, std::uint32_t instance_cull,
+    std::uint32_t native_lod_index=UINT32_MAX,std::uint32_t native_lod_count=0) noexcept {
     const auto* target = g_active ? find_model(model) : nullptr;
+    const bool native_range_owned=target && native_lod_count==target->lod_count && native_lod_index<native_lod_count &&
+        range==target->address+0x28+native_lod_index*0x1C;
+    if (native_range_owned && target->canopy_mesh.enabled && target->canopy_mesh.profile) {
+        const auto selected=select_profile_retained_range_bits(*target->canopy_mesh.profile,original,native_lod_index,instance_cull,true);
+        if (g_identity_diagnostic) return original;
+        if (selected!=original) ++g_canopy_changes;
+        return selected;
+    }
+    if (native_range_owned && target->allow_dense_retention && target->near_mesh.enabled && target->near_mesh.profile &&
+        native_lod_index==target->near_mesh.profile->retained_lod) {
+        const auto selected=select_profile_retained_range_bits(*target->near_mesh.profile,original,native_lod_index,instance_cull,true);
+        if (g_identity_diagnostic) return original;
+        if (selected!=original) ++g_near_changes;
+        return selected;
+    }
     const auto selected = select_extended_foliage_terminal_range_bits(original,
-        target && target->terminal == range && target->terminal_bits == original &&
-        instance_cull >= 0x00800000U && instance_cull < 0x44FA0000U);
+        native_range_owned && target->allow_groundcover_extension && native_lod_index+1==native_lod_count &&
+        target->terminal == range && target->terminal_bits == original &&
+        instance_cull >= 0x00800000U &&
+        instance_cull < kMaximumExtendedFoliageCullDistanceBits);
     if (g_identity_diagnostic) return original;
     if (selected != original) {
         ++g_range_changes;
@@ -313,7 +416,7 @@ extern "C" __declspec(naked) void wawvr_foliage_cull_bridge() noexcept {
         pushfd
         cmp dword ptr [esi-0Ch],00800000h
         jb unadjusted
-        cmp dword ptr [esi-0Ch],044FA0000h
+        cmp dword ptr [esi-0Ch],045FA0000h
         jae unadjusted
         popfd
         pushfd
@@ -359,17 +462,8 @@ extern "C" __declspec(naked) void wawvr_foliage_cull_bridge() noexcept {
 }
 extern "C" __declspec(naked) void wawvr_foliage_range_bridge() noexcept {
     __asm {
-        pushfd
-        cmp dword ptr [esi-0Ch],00800000h
-        jb unadjusted
-        cmp dword ptr [esi-0Ch],044FA0000h
-        jae unadjusted
-        push edx
-        lea edx,[ebx+1]
-        cmp edx,eax
-        pop edx
-        jne unadjusted
-        popfd
+        // Only the displaced native range operand is read before the guarded,
+        // immutable-cache selector. EBP need not be dereferenceable here.
         movss xmm1,dword ptr [ecx]
         pushfd
         pushad
@@ -381,13 +475,15 @@ extern "C" __declspec(naked) void wawvr_foliage_range_bridge() noexcept {
         movups [esp+64],xmm5
         movups [esp+80],xmm6
         movups [esp+96],xmm7
+        push eax
+        push ebx
         push dword ptr [esi-0Ch]
-        push dword ptr [esp+4]
+        push dword ptr [esp+12]
         push dword ptr [ecx]
         push ecx
         push ebp
         call wawvr_select_foliage_range_bits
-        add esp,20
+        add esp,28
         movd xmm1,eax
         movups xmm0,[esp]
         movups xmm2,[esp+16]
@@ -399,11 +495,6 @@ extern "C" __declspec(naked) void wawvr_foliage_range_bridge() noexcept {
         add esp,112
         popad
         popfd
-        comiss xmm1,xmm0
-        jmp dword ptr [wawvr_foliage_range_continue]
-    unadjusted:
-        popfd
-        movss xmm1,dword ptr [ecx]
         comiss xmm1,xmm0
         jmp dword ptr [wawvr_foliage_range_continue]
     }
@@ -489,6 +580,8 @@ ScopedStereoFoliageDistance::ScopedStereoFoliageDistance(std::uint32_t view,std:
         }
         if (!cache_still_owned()) { g_cache = {}; return; }
         g_cull_changes = 0; g_range_changes = 0; g_retained_culls = 0; g_retained_ranges = 0;
+        g_near_changes = 0;
+        g_canopy_changes = 0;
         g_active = !g_cache.models.empty(); applied_ = g_active;
     } catch (...) { g_cache = {}; }
     LARGE_INTEGER finished{},frequency{};
@@ -505,9 +598,9 @@ ScopedStereoFoliageDistance::~ScopedStereoFoliageDistance() {
         QueryPerformanceCounter(&now); QueryPerformanceFrequency(&frequency);
         const auto native_us = frequency.QuadPart > 0
             ? static_cast<std::uint64_t>((now.QuadPart-native_start_)*1000000/frequency.QuadPart) : 0;
-        stereo_diagnostic_log("FoliageDiag scope: frame=%llu view=%u cullChanges=%u terminalChanges=%u beyondOriginalCull=%u retainedTerminal=%u prepareUs=%llu nativeUs=%llu validationQueries=%u identity=%u sharedWrites=0",
+        stereo_diagnostic_log("FoliageDiag scope: frame=%llu view=%u cullChanges=%u terminalChanges=%u beyondOriginalCull=%u retainedTerminal=%u prepareUs=%llu nativeUs=%llu validationQueries=%u identity=%u nearChanges=%u canopyChanges=%u sharedWrites=0",
             static_cast<unsigned long long>(frame_),view_,g_cull_changes,g_range_changes,g_retained_culls,g_retained_ranges,
-            static_cast<unsigned long long>(prepare_us_),static_cast<unsigned long long>(native_us),validation_queries_,g_identity_diagnostic ? 1U : 0U);
+            static_cast<unsigned long long>(prepare_us_),static_cast<unsigned long long>(native_us),validation_queries_,g_identity_diagnostic ? 1U : 0U,g_near_changes,g_canopy_changes);
     }
 }
 } // namespace wawvr::mod

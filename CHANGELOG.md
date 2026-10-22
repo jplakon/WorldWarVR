@@ -4,6 +4,29 @@ All notable public changes to World War VR are recorded here.
 
 The project follows semantic versioning where practical. Versions with an `alpha`, `beta`, or release-candidate suffix are pre-release builds and can still change incompatibly.
 
+## v0.4.0-beta.7
+
+Targeted jungle foliage visibility and detail update.
+
+- Extended unusually short grass and shrub cutoffs and retained fuller detail
+  for the audited dense ground-cover profiles.
+- Kept leaves visible for selected mangrove and birch profiles instead of
+  switching prematurely to sparse or bare geometry. The reported jungle leaf
+  transition received local headset acceptance after focused Tester checks.
+- Preserved authored tree visibility endpoints, ordinary scene visibility,
+  shared model/material bytes and global texture settings. This is not a global
+  highest-detail override or infinite draw distance.
+- Retained beta.6 controls, sights, reloads and handling without gameplay/input
+  changes. The managed launcher changes only version/source metadata; the
+  accepted native launcher helper is retained byte-for-byte.
+
+The exact retained native build passed 102 CTests and 27,431 foliage ABI checks.
+Coverage is targeted, not every map or a full Campaign replay. Dense scenes can
+still have low FPS or stutter; experimental performance candidates are not part
+of this release, and COD4 VR performance parity is not claimed. Practical enemy
+grenade throwback remains disabled, and existing regional/runtime limitations
+remain open.
+
 ## v0.4.0-beta.6
 
 Controls and aiming update, retaining the previous foliage improvements.

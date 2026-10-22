@@ -2,15 +2,15 @@
 
 World War VR brings tracked, room-scale OpenXR play to the Windows retail version of **Call of Duty: World at War**. It provides stereo rendering, 6DOF headset tracking, motion-controller weapons, two-hand handling, manual reload interactions, physical scopes, grenades, and VR-native comfort controls through a standalone launcher.
 
-The current free release is **v0.4.0-beta.6**, a focused controls and aiming
-update: default-off stick-click melee, sprint/reload/handling refinements,
-controller-aware help, Campaign support controls, and exact weapon sight
-corrections including the starting Nacht Colt. The Colt correction received
-native OpenXR Tester checks and a successful local headset test. Earlier foliage,
-chest, scope and feedback work is retained; see [CHANGELOG.md](CHANGELOG.md).
-This is not an all-weapons, universal frame-rate or headset-compatibility fix.
+The current free release is **v0.4.0-beta.7**, a targeted jungle foliage update.
+Grass, shrubs and selected tree profiles retain their leaves and detail farther
+away, addressing the reported blurry-to-full-leaf transition. The affected jungle
+view passed a local headset check after focused OpenXR Tester work. Beta.6's
+controls and aiming improvements are retained; see [CHANGELOG.md](CHANGELOG.md).
+Performance work remains open: denser foliage can be demanding, and this update
+does not promise higher FPS, infinite draw distance or universal pop-in removal.
 
-> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.6 package. The latest local headset result accepts the starting Colt fix, not every weapon or a settled multi-range zero. Experimental practical enemy-grenade throwback remains disabled. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
+> **Beta status:** The creator completed the Campaign in VR during development leading to beta.1. Later releases received focused physical-headset tests, not another full Campaign replay on the final beta.7 package. The latest local headset result accepts the reported foliage correction, not performance or every map. Experimental practical enemy-grenade throwback remains disabled. Zombies remains a primary test target. Local/offline Multiplayer remains experimental, and Online Multiplayer is unsupported.
 
 World War VR is a fan-made open-source project. It does not include Call of Duty: World at War executables, maps, textures, audio, or other Activision game content. You need your own legitimate, compatible World at War 1.7 installation.
 
@@ -118,7 +118,7 @@ runtime test. It is not a universal Pimax or Index fix. See
 | Use / interact | X |
 | Switch weapon | Y; while holding the M1 Garand/M7 pair, Y toggles rifle-grenade mode on or off |
 | Crouch | B; on SteamVR paths where the left Menu action is unavailable, use right-stick down because B becomes the pause/recenter fallback |
-| Melee | Right-stick click, a fast outward free-right-hand swing, or a deliberate forward rifle thrust while both grips are held |
+| Melee | A deliberate free-right-hand swing or forward two-hand rifle thrust; right-stick click is disabled by default |
 | Grab frag grenade | Left index trigger while the left hand is at the left hip |
 | Grab tactical grenade | Left index trigger while the left hand is at the right hip |
 | Throw grenade | Release the left index trigger |
@@ -149,7 +149,7 @@ Read the full [controls guide](docs/CONTROLS.md) before testing manual weapons, 
 Clone the tagged repository, including its pinned OpenXR submodule:
 
 ```powershell
-git clone --recurse-submodules --branch v0.4.0-beta.5 https://github.com/jplakon/WorldWarVR.git
+git clone --recurse-submodules --branch v0.4.0-beta.7 https://github.com/jplakon/WorldWarVR.git
 cd WorldWarVR
 ```
 
@@ -163,24 +163,24 @@ different CMake on PATH is not used. The complete pinned OpenXR source is
 already included, so this native rebuild does not require Git metadata:
 
 ```powershell
-.\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta5
+.\scripts\build.ps1 -Configuration Release -BuildRoot .\rebuild-beta7
 ```
 
 Use a fresh build folder. The script builds the Win32 native components and
 runs their tests. The mod DLL is written to
-`rebuild-beta5\vs-release\src\mod\Release\WorldWarVR.dll`.
+`rebuild-beta7\vs-release\src\mod\Release\WorldWarVR.dll`.
 To rebuild the separate graphical launcher, install the .NET 8 SDK and follow
 the locked restore and publish commands in
 [launcher publishing instructions](launcher-ui/WorldAtWarVR.Launcher/PUBLISHING.md).
 The release packaging scripts require a Git checkout for provenance checks;
 they cannot run directly from the metadata-free Source ZIP.
 
-The root native source matches the retained, tested beta.5 gameplay DLL.
-The graphical launcher retains beta.4 logic with beta.5 version metadata;
-the production native launcher helper is unchanged. Complete beta.4 source
-for that retained component is also supplied under `component-source/beta4`,
-including its pinned dependency source. See `SOURCE-SNAPSHOT.txt` and the
-supplied GPL source notice for component mapping.
+The root native source matches the retained, headset-tested foliage gameplay
+DLL. The graphical launcher retains beta.6 behavior with beta.7 version/source
+metadata; the production native launcher helper is unchanged. Complete historical
+component source remains under `component-source/beta4`, including its pinned
+dependency source. See [the component map](release/COMPONENT-SOURCE-beta7.md),
+`SOURCE-SNAPSHOT.txt` and the supplied GPL source notice for correspondence.
 
 ## Reporting bugs
 

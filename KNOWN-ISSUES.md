@@ -1,6 +1,19 @@
 # Known issues
 
-World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent changes received focused tests rather than another complete Campaign replay on the final beta.6 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent changes received focused tests rather than another complete Campaign replay on the final beta.7 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+
+## Beta.7 acceptance scope
+
+- The reported jungle leaf/detail transition received a successful local headset
+  check. Changes target audited grass, shrub and selected mangrove/birch profiles;
+  they do not establish every foliage variant, map or viewing condition.
+- Low FPS and stutter remain under investigation. Fuller distant foliage can
+  be more demanding. This release does not contain the later private performance
+  experiments or promise COD4 VR frame rates.
+- The accepted foliage gameplay DLL and native helper are retained unchanged.
+  Launcher version/source metadata and release documentation are updated; the
+  final package has not received another full Campaign or all-headset retest.
+- Existing beta.6 control, weapon, runtime and regional limitations below remain.
 
 ## Beta.6 acceptance scope
 
@@ -28,7 +41,7 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 - Experimental practical enemy-grenade throwback remains unresolved and
   hard-disabled. Its new contextual shortcut is not enabled or advertised as
   playable. Existing normal grenade controls remain.
-- The managed launcher retains beta.5 behavior with beta.6 metadata. In
+- The managed launcher retains beta.5 behavior with beta.7 metadata. In
   particular, Regional-Compatibility Test1's separate Campaign validation fix
   is **not included**. Keep a working Test1 folder intact and ask before replacing
   it. This release does not establish universal German/regional compatibility;
@@ -55,11 +68,11 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 
 ## Rendering and performance
 
-- **Foliage pop-in:** beta.5 extends unusually short grass and shrub draw
-  distances while retaining nearby detail and the game's ordinary visibility
-  checks. Shuri Castle simulator checks and a Hard Landing headset test showed
-  improvement; some appearance changes remain. This is not infinite foliage
-  draw distance, coverage of every map, or a guarantee of higher headset FPS.
+- **Foliage visibility and detail:** beta.7 extends short grass/shrub cutoffs and
+  retains fuller leaves/detail for selected audited profiles. The reported jungle
+  transition passed a local headset check. Authored endpoints and ordinary
+  visibility checks remain; other foliage transitions can still occur. This is
+  not infinite draw distance, every-map coverage or a higher-FPS guarantee.
 - **Native** is demanding: it renders two 2496 x 2688 eyes and a separate 1024 x 1024 physical-scope view inside a 6016 x 2688 packed surface.
 - If the image is black, unstable, or too slow, try **Performance**, then **Recovery**.
 - Dense encounters, overlays, recording software, wireless-streaming conditions, and runtime reprojection can introduce stutter independently of the mod.
