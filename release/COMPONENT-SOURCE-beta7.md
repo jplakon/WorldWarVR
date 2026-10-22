@@ -10,6 +10,10 @@ headset test. It does not include the subsequent private performance candidates.
 | `WorldWarVR.exe` and managed launcher assemblies | Portable payload manifest | Root `launcher-ui`; beta.6 implementation, beta.7 version/source metadata only |
 | Managed runtime and third-party dependencies | Portable payload manifest | Pinned project/vendor packages and included runtime licenses |
 
+The unchanged WinUI resource index and visual assets are retained from beta.6.
+The apphost and managed assemblies are rebuilt for version/source metadata;
+launcher implementation and resource content are unchanged.
+
 `release/NATIVE-SOURCE-SHA256.txt` records 385 exact root native source/build
 inputs and 432 OpenXR files. Only four foliage files differ from the beta.6
 native source. The original foliage build passed 102 CTests and 27,431 ABI
