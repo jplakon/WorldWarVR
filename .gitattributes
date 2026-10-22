@@ -3,6 +3,7 @@
 * text=auto
 /src/** -text
 /launcher/** -text
+/launcher-ui/** -text
 /CMakeLists.txt -text
 /.gitmodules -text
 /LICENSE -text
