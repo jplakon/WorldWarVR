@@ -11,29 +11,61 @@ namespace {
 // COD4 physical-scope fallback (roughly 22 cm forward and 5.5 cm above the
 // weapon hand) while allowing individual WaW viewmodels to be polished later
 // without changing the renderer or controller contract.
-constexpr std::array<PhysicalScopeProfile, 7> kProfiles{{
+constexpr std::array<PhysicalScopeProfile, 12> kProfiles{{
     // The Kar98 values come from its live viewmodel: tag_scope is the optic
     // assembly root, while the rear lens is 7.50 IW toward the shooter and
     // 1.575 IW above it. The 0.0153 m radius matches the actual 0.602 IW glass.
     {"kar98k_scoped", {9.25F, 0.0F, 2.15F},
-     {-7.50F, 0.0F, 1.575F}, 20.0F, 0.0153F},
+     {-7.50F, 0.0F, 1.575F}, 20.0F, 0.0153F, false,
+     "viewmodel_ger_kar98_scoped_rifle"},
     {"kar98k_scoped_zombie", {9.25F, 0.0F, 2.15F},
-     {-7.50F, 0.0F, 1.575F}, 20.0F, 0.0153F},
+     {-7.50F, 0.0F, 1.575F}, 20.0F, 0.0153F, false,
+     "viewmodel_ger_kar98_scoped_rifle"},
     {"springfield_scoped", {9.0F, 0.0F, 2.25F},
-     {-3.910136F, -0.001673F, 0.583315F}, 18.0F, 0.011916F},
+     {-3.910136F, -0.001673F, 0.583315F}, 18.0F, 0.011916F, false,
+     "viewmodel_usa_springfield_rifle_scoped"},
     {"mosin_rifle_scoped", {9.25F, 0.0F, 2.15F},
-     {-5.924734F, 0.039932F, 1.815408F}, 20.0F, 0.013495F},
+     {-5.924734F, 0.039932F, 1.815408F}, 20.0F, 0.013495F, false,
+     "viewmodel_rus_mosinnagant_scoped_rifle"},
     {"type99_rifle_scoped", {9.0F, 0.0F, 2.2F},
-     {-4.016429F, 0.023786F, 0.016107F}, 20.0F, 0.013855F},
+     {-4.016429F, 0.023786F, 0.016107F}, 20.0F, 0.013855F, false,
+     "viewmodel_jap_type99_rifle_scoped"},
     {"fg42_scoped", {8.25F, 0.0F, 2.4F},
-     {}, 22.0F, 0.032F},
+     {}, 22.0F, 0.032F, false, "viewmodel_ger_fg42_scoped_lmg"},
     // Vendetta's ptrs41 uses viewmodel_mp_ptrs41. Its transparent rear glass
     // (surface 9, mc/mtl_rus_scope_trans) has center (-2.777846, 0, 3.704640)
     // and aperture radius 0.673388 IW. Subtracting tag_scope's bind position
     // (-0.484172, 0.459957, 1.370917) gives this evaluated-tag correction.
     // This unusually long rifle must not use the small-rifle grip fallback.
     {"ptrs41", {}, {-2.293674F, -0.459957F, 2.333723F},
-     20.0F, 0.0171F, true},
+     20.0F, 0.0171F, true, "viewmodel_mp_ptrs41"},
+    // Complete captured geometry, ordered owner binds and lens geometry are
+    // identical to the corresponding base profiles. Wet metal materials are
+    // different; the Type99 glass geometry/material/owner remain identical.
+    {"mosin_rifle_scoped_noflash", {9.25F, 0.0F, 2.15F},
+     {-5.924734F, 0.039932F, 1.815408F}, 20.0F, 0.013495F, false,
+     "viewmodel_rus_mosinnagant_scoped_rifle"},
+    {"type99_rifle_scoped_wet", {9.0F, 0.0F, 2.2F},
+     {-4.016429F, 0.023786F, 0.016107F}, 20.0F, 0.013855F, false,
+     "viewmodel_jap_type99_rifle_scoped_wet"},
+    // Same weapon name, different actual model and lens owner. The explicit
+    // center is vertex1 of each transparent 21-vertex/20-triangle lens fan;
+    // radius is its measured inscribed projected aperture (0.673387527 IW).
+    {"ptrs41_zombie", {}, {}, 20.0F, 0.017104044F, true,
+     "viewmodel_mp_ptrs41", "tag_scope", 7,
+     {-2.777846098F, 0.0F, 3.704639912F},
+     {0.0F, 0.0F, 0.0F, 1.0F, -0.484171987F, 0.459957004F, 1.370916963F, 2.0F},
+     9, 1, 21, 20, "mc/mtl_rus_scope_trans"},
+    {"ptrs41_zombie", {}, {}, 20.0F, 0.017104044F, true,
+     "viewmodel_zombie_ptrs41", "j_gun", 0,
+     {-2.777846098F, 0.0F, 3.704639912F},
+     {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 2.0F},
+     7, 1, 21, 20, "mc/mtl_rus_scope_trans"},
+    {"ptrs41_zombie_upgraded", {}, {}, 20.0F, 0.017104044F, true,
+     "viewmodel_zombie_ptrs41_up", "j_gun", 0,
+     {-2.777846098F, 0.0F, 3.704639912F},
+     {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 2.0F},
+     7, 1, 21, 20, "mc/mtl_rus_scope_trans"},
 }};
 
 std::mutex g_scope_mutex;
@@ -110,12 +142,94 @@ PhysicalScopeSnapshot g_scope_snapshot{};
 
 const PhysicalScopeProfile* find_physical_scope_profile(
     const std::string_view internal_weapon_name) noexcept {
+    const PhysicalScopeProfile* found = nullptr;
     for (const auto& profile : kProfiles) {
         if (internal_weapon_name == profile.internal_weapon_name) {
+            if (found != nullptr) {
+                return nullptr;
+            }
+            found = &profile;
+        }
+    }
+    return found;
+}
+
+const PhysicalScopeProfile* find_physical_scope_profile(
+    const std::string_view internal_weapon_name,
+    const std::string_view exact_model_name) noexcept {
+    if (internal_weapon_name.empty() || exact_model_name.empty()) {
+        return nullptr;
+    }
+    for (const auto& profile : kProfiles) {
+        if (profile.exact_model_name != nullptr &&
+            internal_weapon_name == profile.internal_weapon_name &&
+            exact_model_name == profile.exact_model_name) {
             return &profile;
         }
     }
     return nullptr;
+}
+
+bool evaluate_physical_scope_owned_lens(
+    const PhysicalScopeProfile* const profile,
+    const wawvr::xr::Vec3f& actual_owner_origin_world,
+    const wawvr::xr::Basis3f& actual_owner_axis_world,
+    wawvr::xr::Vec3f* const output_lens_world) noexcept {
+    if (profile == nullptr || output_lens_world == nullptr ||
+        profile->exact_model_name == nullptr || profile->exact_model_name[0] == '\0' ||
+        profile->lens_owner_tag == nullptr || profile->lens_owner_tag[0] == '\0' ||
+        profile->lens_owner_bone >= 128 || profile->lens_surface_index >= 32 ||
+        profile->lens_center_vertex != 1 || profile->lens_vertex_count != 21 ||
+        profile->lens_triangle_count != 20 || profile->lens_material_name == nullptr ||
+        std::string_view{profile->lens_material_name} != "mc/mtl_rus_scope_trans" ||
+        !profile->requires_model_tag || !finite(profile->lens_center_model_space) ||
+        !finite(actual_owner_origin_world) || !valid_axis(actual_owner_axis_world)) {
+        return false;
+    }
+    const auto& axis = actual_owner_axis_world;
+    const wawvr::xr::Vec3f cross{
+        axis.forward.y * axis.left.z - axis.forward.z * axis.left.y,
+        axis.forward.z * axis.left.x - axis.forward.x * axis.left.z,
+        axis.forward.x * axis.left.y - axis.forward.y * axis.left.x};
+    constexpr float tolerance = 0.001F;
+    if (std::fabs(dot(axis.forward, axis.forward) - 1.0F) > tolerance ||
+        std::fabs(dot(axis.left, axis.left) - 1.0F) > tolerance ||
+        std::fabs(dot(axis.up, axis.up) - 1.0F) > tolerance ||
+        std::fabs(dot(axis.forward, axis.left)) > tolerance ||
+        std::fabs(dot(axis.forward, axis.up)) > tolerance ||
+        std::fabs(dot(axis.left, axis.up)) > tolerance || dot(cross, axis.up) < 1.0F - tolerance) {
+        return false;
+    }
+    for (const float value : profile->lens_owner_bind) {
+        if (!std::isfinite(value)) {
+            return false;
+        }
+    }
+    const auto& b = profile->lens_owner_bind;
+    const float norm_squared = b[0]*b[0] + b[1]*b[1] + b[2]*b[2] + b[3]*b[3];
+    if (norm_squared < 0.5F || norm_squared > 1.5F ||
+        std::fabs(b[7] * norm_squared - 2.0F) > 0.002F) {
+        return false;
+    }
+    const float inverse_norm = 1.0F / std::sqrt(norm_squared);
+    // Normalize and conjugate the exact authored owner quaternion. The point
+    // is in model space; adding the evaluated owner translation alone would
+    // double-count its bind origin and miss any authored bind rotation.
+    const wawvr::xr::Vec3f q{-b[0]*inverse_norm, -b[1]*inverse_norm, -b[2]*inverse_norm};
+    const float w = b[3] * inverse_norm;
+    const auto v = subtract(profile->lens_center_model_space, {b[4], b[5], b[6]});
+    const wawvr::xr::Vec3f t{
+        2.0F*(q.y*v.z-q.z*v.y), 2.0F*(q.z*v.x-q.x*v.z), 2.0F*(q.x*v.y-q.y*v.x)};
+    const wawvr::xr::Vec3f local{
+        v.x+w*t.x+q.y*t.z-q.z*t.y,
+        v.y+w*t.y+q.z*t.x-q.x*t.z,
+        v.z+w*t.z+q.x*t.y-q.y*t.x};
+    const auto world = add(actual_owner_origin_world, compose(axis, local));
+    if (!finite(world)) {
+        return false;
+    }
+    *output_lens_world = world;
+    return true;
 }
 
 bool build_physical_scope_snapshot(
@@ -149,7 +263,11 @@ bool build_physical_scope_snapshot(
     if (profile == nullptr || weapon_index <= 0 ||
         controller_generation == 0 || publication_milliseconds == 0 ||
         !physical_scope_pose || !finite(grip_world) ||
-        (profile->requires_model_tag && lens_tag_world == nullptr) ||
+        ((profile->requires_model_tag || profile->lens_owner_tag != nullptr) &&
+         lens_tag_world == nullptr) ||
+        (profile->lens_owner_tag != nullptr && lens_tag_weapon_local_offset != nullptr &&
+         (lens_tag_weapon_local_offset->x != 0.0F || lens_tag_weapon_local_offset->y != 0.0F ||
+          lens_tag_weapon_local_offset->z != 0.0F)) ||
         (lens_tag_world != nullptr && !finite(*lens_tag_world)) ||
         (lens_tag_weapon_local_offset != nullptr &&
          !finite(*lens_tag_weapon_local_offset)) ||

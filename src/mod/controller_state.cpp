@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "controller_state.hpp"
 #include "current_head_local_controller_pose_logic.hpp"
+#include "personal_weapon_alignment.hpp"
 #include "tracking_anchor_sync.hpp"
 #include "weapon_placement.hpp"
 
@@ -27,6 +28,28 @@ std::array<ControllerWeaponPoseFilterState, wawvr::xr::kHandCount>
     g_publication_weapon_filters{};
 std::array<CurrentHeadLocalControllerPoseFilterState, wawvr::xr::kHandCount>
     g_current_head_local_publication_weapon_filters{};
+
+[[nodiscard]] const PersonalWeaponAlignment& personal_weapon_alignment() noexcept {
+    // Launcher writes explicit, validated values into this child's environment.
+    // Freeze the fit for one game process so edits cannot introduce a pose jump
+    // or mix old filtered samples with newly calibrated raw samples mid-game.
+    static const PersonalWeaponAlignment alignment = []() noexcept {
+        PersonalWeaponAlignment result{};
+        const auto read = [](const char* const name, float* const value) noexcept {
+            char text[64]{};
+            const DWORD count = GetEnvironmentVariableA(name, text, sizeof(text));
+            if (count > 0 && count < sizeof(text)) {
+                static_cast<void>(parse_personal_weapon_angle(
+                    std::string_view(text, count), value));
+            }
+        };
+        read(kWeaponPitchEnvironment, &result.pitch_degrees);
+        read(kWeaponYawEnvironment, &result.yaw_degrees);
+        read(kWeaponRollEnvironment, &result.roll_degrees);
+        return result;
+    }();
+    return alignment;
+}
 
 bool finite(const float value) noexcept { return std::isfinite(value); }
 
@@ -74,6 +97,12 @@ void publish_controller_frame(
     const wawvr::xr::Posef& tracking_anchor) noexcept {
     ControllerFrameSnapshot next{};
     next.frame = frame;
+    // Calibrate the right aim once, before BOTH raw and immutable filtered
+    // weapon paths consume it. Do not move grips, the left pouch hand, head,
+    // button edges, or any exact weapon-specific sight/impact correction.
+    static_cast<void>(apply_personal_weapon_alignment(
+        personal_weapon_alignment(), &next.frame));
+    const auto& calibrated_frame = next.frame;
     next.tracking_anchor = tracking_anchor;
     next.publication_milliseconds = GetTickCount64();
 
@@ -81,10 +110,10 @@ void publish_controller_frame(
     AcquireSRWLockExclusive(&g_controller_frame_lock);
     next.generation = ++g_controller_frame_generation;
     const bool current_head_local_frame_ready =
-        current_head_local_frame_contract_valid(frame);
+        current_head_local_frame_contract_valid(calibrated_frame);
     for (std::uint32_t index = 0; index < wawvr::xr::kHandCount; ++index) {
         static_cast<void>(update_publication_weapon_pose(
-            frame.actions.hands[index], next.generation,
+            calibrated_frame.actions.hands[index], next.generation,
             next.publication_milliseconds, &g_publication_weapon_filters[index],
             &next.weapon_poses[index]));
         if (current_head_local_frame_ready) {
@@ -104,7 +133,8 @@ void publish_controller_frame(
             }
             wawvr::xr::EnginePose current_head_local{};
             if (filtered_current_head_local_controller_pose(
-                    frame.head_center, frame.actions.hands[index],
+                    calibrated_frame.head_center,
+                    calibrated_frame.actions.hands[index],
                     next.generation, next.publication_milliseconds,
                     next.publication_milliseconds,
                     &current_head_local_filter, &current_head_local)) {

@@ -168,6 +168,13 @@ std::atomic<std::uintptr_t> g_headset_test_last_weapon_index{0};
 std::atomic<std::uintptr_t> g_headset_test_select_weapon_index{0};
 std::atomic<std::uintptr_t> g_headset_test_give_player_weapon{0};
 std::atomic<std::uint32_t> g_headset_m1garand_gl_rifle_index{0};
+std::atomic<bool> g_finite_aim_command_path_bound{false};
+struct FiniteAimPostComFrameContext final {
+    bool active{};
+    std::uintptr_t cbuf{};
+    T4PresentationState presentation{};
+};
+thread_local FiniteAimPostComFrameContext g_finite_aim_post_com_frame{};
 std::array<char, 512> g_headset_zombie_magazine_command{};
 bool g_headset_zombie_magazine_uses_nacht_m1garand = false;
 PezBotAutofillState g_pezbot_autofill_state{};
@@ -373,6 +380,7 @@ constexpr std::size_t kHeadsetTestLocalPlayerClientPointerOffset = 0x180;
 constexpr std::size_t kHeadsetTestPlayerStateMinimumSpan = 0x920;
 constexpr std::size_t kHeadsetTestPlayerStateAmmoOffset = 0x17C;
 constexpr std::size_t kHeadsetTestPlayerStateClipAmmoOffset = 0x5FC;
+constexpr std::size_t kFiniteAimPlayerStateWeaponsOffset = 0x7FC;
 constexpr std::size_t kHeadsetTestWeaponBitsetWords = 4;
 constexpr std::size_t kHeadsetTestWeaponDefinitionNameOffset = 0x00;
 constexpr std::size_t kHeadsetTestWeaponDefinitionAmmoIndexOffset = 0x3F4;
@@ -1159,6 +1167,119 @@ directly_equip_headset_m1garand_gl() noexcept {
 #endif
 }
 
+struct FiniteAimLoadedWeapon final {
+    std::array<char,96> name{};
+    std::uint32_t index{},last_index{},definition{},model{};
+    std::int32_t ammo_index{-1},clip_index{-1},clip_size{};
+    [[nodiscard]] FiniteAimRegisteredIdentity identity() const noexcept {
+        return {name.data(),index,last_index,definition,model,ammo_index,clip_index,clip_size};
+    }
+};
+
+[[nodiscard]] bool copy_finite_aim_native_name(std::uintptr_t address,std::array<char,96>* output) noexcept {
+    if(!address||!output)return false;
+    output->fill('\0');
+    for(std::size_t i=0;i<output->size();++i){
+        if(!readable_range(reinterpret_cast<const void*>(address+i),1))return false;
+        std::memcpy(output->data()+i,reinterpret_cast<const void*>(address+i),1);
+        if((*output)[i]=='\0')return i>0;
+    }
+    return false;
+}
+
+// Exact registered name and table index only. This cannot load an asset from
+// caller text, and a duplicate registered exact name is deliberately rejected.
+[[nodiscard]] bool find_finite_aim_registered_weapon(std::uint16_t request,FiniteAimLoadedWeapon* output) noexcept {
+    if(!output||request>=kAllWeaponAimTestDefinitions.size())return false;
+    const auto table=g_headset_test_weapon_definition_table.load(std::memory_order_acquire);
+    const auto last_address=g_headset_test_last_weapon_index.load(std::memory_order_acquire);
+    if(!table||!last_address||!readable_range(reinterpret_cast<const void*>(last_address),4))return false;
+    std::uint32_t last{};std::memcpy(&last,reinterpret_cast<const void*>(last_address),4);
+    if(last==0||last>=128||!readable_range(reinterpret_cast<const void*>(table),(last+1U)*4U))return false;
+    FiniteAimLoadedWeapon found{};unsigned matches{};
+    for(std::uint32_t index=1;index<=last;++index){
+        std::uint32_t definition{},name{};
+        std::memcpy(&definition,reinterpret_cast<const void*>(table+index*4U),4);
+        if(!definition)continue;
+        if(!readable_range(reinterpret_cast<const void*>(definition),16))return false;
+        std::memcpy(&name,reinterpret_cast<const void*>(definition),4);
+        std::array<char,96> native_name{};
+        if(!copy_finite_aim_native_name(name,&native_name))return false;
+        if(std::string_view(native_name.data())!=kAllWeaponAimTestDefinitions[request].weapon)continue;
+        if(++matches!=1||!readable_range(reinterpret_cast<const void*>(definition),
+            kHeadsetTestWeaponDefinitionClipSizeOffset+4U))return false;
+        found.name=native_name;found.index=index;found.last_index=last;found.definition=definition;
+        std::memcpy(&found.model,reinterpret_cast<const void*>(definition+12U),4);
+        std::memcpy(&found.ammo_index,reinterpret_cast<const void*>(definition+kHeadsetTestWeaponDefinitionAmmoIndexOffset),4);
+        std::memcpy(&found.clip_index,reinterpret_cast<const void*>(definition+kHeadsetTestWeaponDefinitionClipIndexOffset),4);
+        std::memcpy(&found.clip_size,reinterpret_cast<const void*>(definition+kHeadsetTestWeaponDefinitionClipSizeOffset),4);
+    }
+    std::uint32_t last_after{};std::memcpy(&last_after,reinterpret_cast<const void*>(last_address),4);
+    if(matches!=1||last_after!=last||!finite_aim_registered_identity_valid(request,found.identity())||
+        !readable_range(reinterpret_cast<const void*>(found.model),4))return false;
+    *output=found;return true;
+}
+
+[[nodiscard]] std::uintptr_t finite_aim_local_player_state() noexcept {
+    const auto entity=g_headset_test_local_player_entity.load(std::memory_order_acquire);
+    if(!entity||!readable_range(reinterpret_cast<const void*>(entity+kHeadsetTestLocalPlayerClientPointerOffset),4))return 0;
+    std::uint32_t state{};std::memcpy(&state,reinterpret_cast<const void*>(entity+kHeadsetTestLocalPlayerClientPointerOffset),4);
+    return state&&writable_range(reinterpret_cast<void*>(state),kHeadsetTestPlayerStateMinimumSpan)?state:0;
+}
+
+[[nodiscard]] bool finite_aim_native_weapon_owned(std::uintptr_t state,std::uint32_t index) noexcept {
+    if(!state||index==0||index>=128)return false;
+    const auto address=state+kFiniteAimPlayerStateWeaponsOffset+(index>>5U)*4U;
+    if(!readable_range(reinterpret_cast<const void*>(address),4))return false;
+    std::uint32_t bits{};std::memcpy(&bits,reinterpret_cast<const void*>(address),4);
+    return (bits&(1U<<(index&31U)))!=0;
+}
+
+[[nodiscard]] bool finite_aim_runtime_gate(std::uint16_t request,std::uintptr_t cbuf) noexcept {
+    const auto& context=g_finite_aim_post_com_frame;
+    const auto give=g_headset_test_give_player_weapon.load(std::memory_order_acquire);
+    const auto select=g_headset_test_select_weapon_index.load(std::memory_order_acquire);
+    return finite_aim_grant_allowed({request,g_single_player_profile.load(std::memory_order_acquire),
+        g_finite_aim_command_path_bound.load(std::memory_order_acquire),
+        GetModuleHandleW(L"openxr_simulator.dll")!=nullptr,
+        context.active&&cbuf&&context.cbuf==cbuf&&g_cbuf_add_text_address.load(std::memory_order_acquire)==cbuf,
+        context.presentation.valid,
+        g_headset_test_local_player_entity.load(std::memory_order_acquire)&&
+        g_headset_test_weapon_definition_table.load(std::memory_order_acquire)&&
+        g_headset_test_last_weapon_index.load(std::memory_order_acquire)&&executable_address(give)&&executable_address(select),
+        context.presentation.key_catchers,context.presentation.connection_state});
+}
+
+[[nodiscard]] FiniteAimGrantResult apply_finite_aim_registered_grant(std::uint16_t request,std::uintptr_t cbuf) noexcept {
+    if(!finite_aim_runtime_gate(request,cbuf))return FiniteAimGrantResult::rejected;
+    FiniteAimLoadedWeapon first{},second{};
+    if(!find_finite_aim_registered_weapon(request,&first))return FiniteAimGrantResult::target_not_registered;
+    if(!find_finite_aim_registered_weapon(request,&second)||
+        !finite_aim_registered_identity_same(request,first.identity(),second.identity()))return FiniteAimGrantResult::source_changed;
+    FiniteAimAmmoPlan ammo{};
+    const auto state=finite_aim_local_player_state();
+    if(!state||!finite_aim_ammo_plan(request,first.identity(),&ammo))return FiniteAimGrantResult::unavailable;
+    const bool already_owned=finite_aim_native_weapon_owned(state,first.index);
+    if(!already_owned&&!give_headset_test_weapon(state,first.index))return FiniteAimGrantResult::give_failed;
+    // G_GivePlayerWeapon alone establishes slots/camo/alternate ownership.
+    // Re-resolve after that native call before our two bounded ammo writes.
+    FiniteAimLoadedWeapon after{};
+    if(!finite_aim_runtime_gate(request,cbuf)||finite_aim_local_player_state()!=state||
+        !find_finite_aim_registered_weapon(request,&after)||
+        !finite_aim_registered_identity_same(request,first.identity(),after.identity()))return FiniteAimGrantResult::source_changed;
+    if(!finite_aim_native_weapon_owned(state,first.index))return FiniteAimGrantResult::give_failed;
+    const auto reserve_address=state+kHeadsetTestPlayerStateAmmoOffset+static_cast<std::size_t>(ammo.ammo_index)*4U;
+    const auto clip_address=state+kHeadsetTestPlayerStateClipAmmoOffset+static_cast<std::size_t>(ammo.clip_index)*4U;
+    if(!writable_range(reinterpret_cast<void*>(reserve_address),4)||!writable_range(reinterpret_cast<void*>(clip_address),4))
+        return FiniteAimGrantResult::unavailable;
+    std::memcpy(reinterpret_cast<void*>(reserve_address),&ammo.reserve,4);
+    std::memcpy(reinterpret_cast<void*>(clip_address),&ammo.clip,4);
+    const bool submitted=select_headset_test_weapon_index(first.index);
+    stereo_diagnostic_log("FiniteAimGrant name=%s weapon=%u definition=%08X model=%08X alreadyOwned=%u clip=%d reserve=%d nativeSelectorSubmitted=%u rawSelectionWrites=0 rawOwnershipWrites=0 actualHeldIdentityStillRequired=1",
+        first.name.data(),first.index,first.definition,first.model,already_owned?1U:0U,ammo.clip,ammo.reserve,submitted?1U:0U);
+    return submitted?FiniteAimGrantResult::selection_submitted:FiniteAimGrantResult::selection_failed;
+}
+
 enum class M1GarandGlToggleResult : std::uint8_t {
     not_applicable,
     unavailable,
@@ -1491,6 +1612,11 @@ void restore_native_menu_mouse_gate() noexcept {
 
 }  // namespace
 
+FiniteAimGrantResult simulator_grant_registered_aim_weapon_after_com_frame(
+    const std::uint16_t catalogue_index,const std::uintptr_t validated_cbuf_address) noexcept {
+    return apply_finite_aim_registered_grant(catalogue_index,validated_cbuf_address);
+}
+
 bool simulator_requested_magazine_asset_inventory_ready() noexcept {
     if (!g_single_player_profile.load(std::memory_order_acquire) ||
         !environment_value_contains(
@@ -1613,6 +1739,13 @@ bool bind_t4_menu_input(
         headset_m1garand_gl_test_requested ||
         simulator_magazine_weapon ==
             SimulatorBoltActionWeapon::M1GarandGrenadeLauncher;
+    std::array<wchar_t,1024> finite_aim_command_path{};
+    const auto finite_aim_path_size=GetEnvironmentVariableW(L"WAWVR_PERFORMANCE_COMMAND_FILE",
+        finite_aim_command_path.data(),static_cast<DWORD>(finite_aim_command_path.size()));
+    const bool finite_aim_test_requested=executable_variant==wawvr::t4::ExecutableVariant::single_player&&
+        finite_aim_path_size<finite_aim_command_path.size()&&
+        finite_aim_local_command_path_valid({finite_aim_command_path.data(),finite_aim_path_size});
+    g_finite_aim_command_path_bound.store(finite_aim_test_requested,std::memory_order_release);
     if (executable_variant == wawvr::t4::ExecutableVariant::single_player) {
         // The exact map-local indices vary across Campaign and Zombies. Keep
         // the read-only definition-table lookup and native selector available
@@ -1631,7 +1764,7 @@ bool bind_t4_menu_input(
         g_headset_test_select_weapon_index.store(
             select_weapon_index.value_or(0), std::memory_order_release);
     }
-    if (direct_m1garand_gl_test_requested) {
+    if (direct_m1garand_gl_test_requested||finite_aim_test_requested) {
         const auto local_player_entity = bindings.data_address(
             wawvr::t4::DataSymbolId::local_player_entity,
             kHeadsetTestLocalPlayerClientPointerOffset +
@@ -1827,6 +1960,7 @@ void clear_t4_menu_input() noexcept {
     g_campaign_selector_sequence.store(0, std::memory_order_release);
     g_campaign_selector_sample_milliseconds.store(0, std::memory_order_release);
     clear_performance_command_service();
+    g_finite_aim_command_path_bound.store(false,std::memory_order_release);
     g_simulator_weapon.store(
         SimulatorBoltActionWeapon::None, std::memory_order_release);
     g_headset_zombie_magazine_command.fill('\0');
@@ -1949,10 +2083,15 @@ T4MenuInputServiceResult service_t4_menu_input_after_com_frame(
         return result;
     }
 
-    service_performance_command_file_after_com_frame(
-        cbuf_add_text, &queue_console_command, now_milliseconds,
-        presentation.valid, presentation.key_catchers,
-        presentation.connection_state);
+    {
+        const auto previous=g_finite_aim_post_com_frame;
+        g_finite_aim_post_com_frame={true,cbuf_add_text,presentation};
+        service_performance_command_file_after_com_frame(
+            cbuf_add_text, &queue_console_command, now_milliseconds,
+            presentation.valid, presentation.key_catchers,
+            presentation.connection_state);
+        g_finite_aim_post_com_frame=previous;
+    }
 
     const CampaignUnlockDisposition campaign_unlock =
         campaign_unlock_disposition(

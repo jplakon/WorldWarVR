@@ -6,6 +6,7 @@
 #include "menu_surface_logic.hpp"
 #include "native_gameplay_command_logic.hpp"
 #include "present_hook_logic.hpp"
+#include "finite_aim_grant_logic.hpp"
 
 #include "t4/bindings.hpp"
 #include "xr_types.h"
@@ -68,6 +69,13 @@ void clear_t4_menu_input() noexcept;
 // weapon asset without affecting normal headset or retail launches.
 [[nodiscard]] bool
 simulator_requested_magazine_asset_inventory_ready() noexcept;
+
+// Finite, simulator-only command-file test seam. Rejects calls outside this
+// module's validated post-Com_Frame service scope. A submitted native selector
+// is not proof that the requested weapon became held; observe that separately.
+[[nodiscard]] FiniteAimGrantResult
+simulator_grant_registered_aim_weapon_after_com_frame(
+    std::uint16_t catalogue_index,std::uintptr_t validated_cbuf_address) noexcept;
 
 // Must be called only from the validated WinMain post-Com_Frame boundary.
 // OpenXR actions are sampled there; no engine UI function is called by a

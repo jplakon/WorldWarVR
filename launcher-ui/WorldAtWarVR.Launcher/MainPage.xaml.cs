@@ -19,6 +19,7 @@ public sealed partial class MainPage : Page
     private bool _initializing = true;
     private bool _initializationStarted;
     private bool _launching;
+    private bool _updatingWeaponAlignment;
 
     public bool IsHighContrast { get; } = new AccessibilitySettings().HighContrast;
 
@@ -91,6 +92,9 @@ public sealed partial class MainPage : Page
         AutomaticReloadCheckBox.IsChecked = _settings.AutomaticReload;
         ButtonGrenadesCheckBox.IsChecked = _settings.ButtonGrenades;
         SmoothTurningCheckBox.IsChecked = _settings.SmoothTurning;
+        WeaponPitchNumberBox.Value = _settings.WeaponPitchDegrees;
+        WeaponYawNumberBox.Value = _settings.WeaponYawDegrees;
+        WeaponRollNumberBox.Value = _settings.WeaponRollDegrees;
         NativeRadio.IsChecked = _settings.Resolution == VrResolutionPreset.Recommended;
         PerformanceRadio.IsChecked = _settings.Resolution == VrResolutionPreset.HighQuality;
         RecoveryRadio.IsChecked = _settings.Resolution == VrResolutionPreset.Performance;
@@ -111,6 +115,9 @@ public sealed partial class MainPage : Page
             AutomaticReload = AutomaticReloadCheckBox.IsChecked == true,
             ButtonGrenades = ButtonGrenadesCheckBox.IsChecked == true,
             SmoothTurning = SmoothTurningCheckBox.IsChecked == true,
+            WeaponPitchDegrees = WeaponPitchNumberBox.Value,
+            WeaponYawDegrees = WeaponYawNumberBox.Value,
+            WeaponRollDegrees = WeaponRollNumberBox.Value,
             Resolution = GetSelectedResolution(),
         }).Normalize();
     }
@@ -204,6 +211,38 @@ public sealed partial class MainPage : Page
         {
             await SaveSettingsQuietlyAsync();
         }
+    }
+
+    private async void WeaponAlignment_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_initializing || _updatingWeaponAlignment)
+        {
+            return;
+        }
+
+        await SaveSettingsQuietlyAsync();
+    }
+
+    private async void ResetWeaponAlignment_Click(object sender, RoutedEventArgs e)
+    {
+        if (_initializing)
+        {
+            return;
+        }
+
+        _updatingWeaponAlignment = true;
+        try
+        {
+            WeaponPitchNumberBox.Value = 0;
+            WeaponYawNumberBox.Value = 0;
+            WeaponRollNumberBox.Value = 0;
+        }
+        finally
+        {
+            _updatingWeaponAlignment = false;
+        }
+
+        await SaveSettingsQuietlyAsync();
     }
 
     private void UpdateTargetPresentation()

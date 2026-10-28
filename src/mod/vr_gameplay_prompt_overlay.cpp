@@ -6,6 +6,8 @@
 #include "bolt_action_weapon_profile.hpp"
 #include "detachable_magazine_weapon_profile.hpp"
 #include "manual_grenade_runtime.hpp"
+#include "manual_reload_runtime.hpp"
+#include "reload_pouch_projection.hpp"
 #include "rocket_barrage_logic.hpp"
 #include "stereo_diagnostics.hpp"
 #include "t4_menu_input.hpp"
@@ -127,6 +129,79 @@ void line(std::vector<Vertex>& vertices, const std::string_view text,
                     rectangle(vertices, x + static_cast<float>(i*6+col)*pixel,
                         y + static_cast<float>(r)*pixel, pixel,pixel,color);
     }
+}
+
+void stroke(std::vector<Vertex>& vertices, const float ax,const float ay,
+    const float bx,const float by,const float thickness,const D3DCOLOR color) {
+    const float length=std::hypot(bx-ax,by-ay);
+    if (length < .001F) return;
+    const float x=-(by-ay)*thickness*.5F/length;
+    const float y=(bx-ax)*thickness*.5F/length;
+    const Vertex a{ax+x,ay+y,0,1,color},b{bx+x,by+y,0,1,color};
+    const Vertex c{bx-x,by-y,0,1,color},d{ax-x,ay-y,0,1,color};
+    vertices.insert(vertices.end(),{a,b,c,a,c,d});
+}
+
+bool pouch_geometry(std::vector<Vertex>& vertices,
+    const ManualReloadPouchHint& hint,const wawvr::xr::FrameState& frame,
+    const wawvr::xr::StereoSourceLayout& layout,const UINT atlas_width,
+    const UINT atlas_height) {
+    vertices.clear();
+    for(std::size_t index=0;index<2;++index) {
+        const auto first_vertex=vertices.size();
+        const auto& rect=layout.eyes[index];
+        if(!std::isfinite(rect.x) || !std::isfinite(rect.y) ||
+            !std::isfinite(rect.width) || !std::isfinite(rect.height) ||
+            rect.x<0 || rect.y<0 || rect.width<=0 || rect.height<=0 ||
+            rect.x+rect.width>1.00001F || rect.y+rect.height>1.00001F) return false;
+        const auto& destination=layout.destinations[index];
+        const auto marker=project_reload_pouch(hint.center_tracking,frame.eyes[index],destination);
+        // Bilateral visibility is one transaction; never show only one eye.
+        if(!marker.valid) {vertices.clear();return false;}
+        const float w=rect.width*atlas_width,h=rect.height*atlas_height;
+        const float x=(rect.x+marker.center.x*rect.width)*atlas_width;
+        const float y=(rect.y+marker.center.y*rect.height)*atlas_height;
+        const float pixel=(std::max)(1.F,(std::min)(2.F,std::floor(h*.0015F)));
+        const float rx=(std::max)(4.F*pixel,marker.radius.x*w);
+        const float ry=(std::max)(4.F*pixel,marker.radius.y*h);
+        if(w<200 || h<160 || rx>w*.1F || ry>h*.1F) {vertices.clear();return false;}
+        const auto color=hint.hovered ? D3DCOLOR_ARGB(255,90,255,160)
+                                     : D3DCOLOR_ARGB(240,255,215,125);
+        rectangle(vertices,x-rx-pixel*2,y-ry-pixel*2,rx*2+pixel*4,ry*2+pixel*4,
+            D3DCOLOR_ARGB(145,8,12,16));
+        // A pouch outline with three ammunition bars, not a fake magazine.
+        for(unsigned edge=0;edge<4;++edge) {
+            const std::array<wawvr::xr::Vec2f,4> p{{{x-rx,y-ry},{x+rx,y-ry},
+                {x+rx,y+ry},{x-rx,y+ry}}};
+            stroke(vertices,p[edge].x,p[edge].y,p[(edge+1)%4].x,p[(edge+1)%4].y,pixel,color);
+        }
+        for(int bar=-1;bar<=1;++bar)
+            rectangle(vertices,x+bar*rx*.45F-pixel*.5F,y-ry*.6F,pixel,ry*1.2F,color);
+        const std::string_view label=hint.hovered ? "GRIP" : "AMMO";
+        const float text_width=static_cast<float>(label.size()*6)*pixel;
+        if(text_width+pixel*4>w) {vertices.clear();return false;}
+        const float text_x=x-text_width*.5F;
+        rectangle(vertices,text_x-pixel*2,y+ry+pixel*2,
+            text_width+pixel*4,pixel*10,D3DCOLOR_ARGB(180,8,12,16));
+        line(vertices,label,text_x,y+ry+pixel*3,pixel,color);
+        for(std::size_t v=first_vertex;v<vertices.size();++v) {
+            const auto& p=vertices[v];
+            if(!std::isfinite(p.x) || !std::isfinite(p.y) ||
+                p.x<rect.x*atlas_width-.5F || p.x>(rect.x+rect.width)*atlas_width-.5F ||
+                p.y<rect.y*atlas_height-.5F || p.y>(rect.y+rect.height)*atlas_height-.5F) {
+                vertices.clear();return false;
+            }
+            // The entire compact cue must survive the compositor crop in
+            // both eyes, not merely fit inside the pre-remap source atlas.
+            const float output_u=destination.x+(p.x-rect.x*atlas_width)/w*destination.width;
+            const float output_v=destination.y+(p.y-rect.y*atlas_height)/h*destination.height;
+            if(!std::isfinite(output_u) || !std::isfinite(output_v) ||
+                output_u<0.F || output_u>1.F || output_v<0.F || output_v>1.F) {
+                vertices.clear();return false;
+            }
+        }
+    }
+    return !vertices.empty();
 }
 
 class StateGuard final {
@@ -260,7 +335,18 @@ void draw_vr_gameplay_prompt_overlay(IDirect3DDevice9* const device,
             .left_binding_profile = frame.actions.hands[0].binding_profile,
             .right_binding_profile = frame.actions.hands[1].binding_profile,
         });
-        if (prompt.kind == VrGameplayPromptKind::none) { last = prompt; return; }
+        ManualReloadPouchHint pouch{};
+        bool pouch_visible=!automatic_reload && !multiplayer &&
+            read_manual_reload_pouch_hint(&pouch) && pouch.available &&
+            pouch.action_sequence!=0 && pouch.action_sequence<=frame.actions.sequence &&
+            now>=pouch.published_milliseconds && now-pouch.published_milliseconds<=100;
+        if(pouch_visible) {
+            const auto& hand=frame.actions.hands[pouch.left_hand ? 0:1].grip;
+            pouch_visible=hand.active && hand.position_valid && hand.orientation_valid &&
+                std::isfinite(hand.pose.position.x) && std::isfinite(hand.pose.position.y) &&
+                std::isfinite(hand.pose.position.z);
+        }
+        if (prompt.kind == VrGameplayPromptKind::none && !pouch_visible) { last = prompt; return; }
         ComPtr<IDirect3DSurface9> backbuffer;
         D3DSURFACE_DESC desc{};
         if (FAILED(device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&backbuffer)) ||
@@ -304,19 +390,20 @@ void draw_vr_gameplay_prompt_overlay(IDirect3DDevice9* const device,
         static std::array<wawvr::xr::NormalizedRect,2> geometry_eyes{};
         static UINT geometry_width{},geometry_height{};
         const std::string_view first(prompt.first.data()),second(prompt.second.data());
-        const auto longest = (std::max)(first.size(),second.size());
+        const auto longest = (std::max)(std::size_t{1},(std::max)(first.size(),second.size()));
+        bool prompt_geometry_ok=ok;
         if (geometry_prompt != prompt || geometry_width != desc.Width ||
             geometry_height != desc.Height || std::memcmp(geometry_eyes.data(),
                 layout.eyes,sizeof(layout.eyes)) != 0) {
             vertices.clear();
             if (vertices.capacity() == 0)
                 vertices.reserve(kVrPromptLineBytes*7*5*6*4);
-            for (const auto& eye : layout.eyes) {
+            if(prompt.kind != VrGameplayPromptKind::none) for (const auto& eye : layout.eyes) {
                 if (!std::isfinite(eye.x) || !std::isfinite(eye.y) ||
                     !std::isfinite(eye.width) || !std::isfinite(eye.height) ||
                     eye.x < 0 || eye.y < 0 || eye.width <= 0 || eye.height <= 0 ||
                     eye.x+eye.width > 1.00001F || eye.y+eye.height > 1.00001F) {
-                    vertices.clear(); ok=false; break;
+                    vertices.clear(); prompt_geometry_ok=false; break;
                 }
                 const float width=eye.width*desc.Width,height=eye.height*desc.Height;
                 const float pixel=(std::max)(1.F,std::floor((std::min)(
@@ -324,7 +411,7 @@ void draw_vr_gameplay_prompt_overlay(IDirect3DDevice9* const device,
                 // Tiny recovery/test viewports must not let a minimum-size
                 // glyph overflow into the other eye or the optic strip.
                 if (static_cast<float>(longest*6)*pixel > width*.92F) {
-                    vertices.clear(); ok=false; break;
+                    vertices.clear(); prompt_geometry_ok=false; break;
                 }
                 const float x=eye.x*desc.Width+width*.5F;
                 // Retrievable held help belongs near the binocular center,
@@ -340,19 +427,33 @@ void draw_vr_gameplay_prompt_overlay(IDirect3DDevice9* const device,
                 line(vertices,first,x-static_cast<float>(first.size()*6)*pixel*.5F,y,pixel,color);
                 line(vertices,second,x-static_cast<float>(second.size()*6)*pixel*.5F,y+pixel*10,pixel,color);
             }
-            if (ok) {
+            if (prompt_geometry_ok) {
                 geometry_prompt=prompt;
                 geometry_width=desc.Width; geometry_height=desc.Height;
                 std::copy(std::begin(layout.eyes),std::end(layout.eyes),geometry_eyes.begin());
             }
         }
-        const bool drawn = ok && !vertices.empty() && SUCCEEDED(device->DrawPrimitiveUP(
+        const bool drawn = prompt_geometry_ok && !vertices.empty() && SUCCEEDED(device->DrawPrimitiveUP(
             D3DPT_TRIANGLELIST,static_cast<UINT>(vertices.size()/3),
             vertices.data(),sizeof(Vertex)));
         if (drawn && prompt != last) {
             stereo_diagnostic_log("VRPromptDiag stereo guidance kind=%u eyes=2 text1=%s text2=%s",
                 static_cast<unsigned>(prompt.kind),prompt.first.data(),prompt.second.data());
             last=prompt;
+        }
+        static std::vector<Vertex> pouch_vertices;
+        static unsigned last_pouch_state{};
+        unsigned pouch_state{};
+        if(ok && pouch_visible && pouch_geometry(pouch_vertices,pouch,frame,layout,desc.Width,desc.Height) &&
+            SUCCEEDED(device->DrawPrimitiveUP(D3DPT_TRIANGLELIST,
+                static_cast<UINT>(pouch_vertices.size()/3),pouch_vertices.data(),sizeof(Vertex)))) {
+            pouch_state=1U | (pouch.hovered ? 2U : 0U) | (pouch.left_hand ? 4U : 0U);
+        }
+        if(pouch_state != last_pouch_state) {
+            stereo_diagnostic_log("PouchOverlayDiag visible=%u hovered=%u left=%u eyes=%u sequence=%llu",
+                pouch_state ? 1U:0U,pouch.hovered ? 1U:0U,pouch.left_hand ? 1U:0U,
+                pouch_state ? 2U:0U,static_cast<unsigned long long>(pouch.action_sequence));
+            last_pouch_state=pouch_state;
         }
     } catch (...) {
         // The native rendering/capture path remains the authority on failure.

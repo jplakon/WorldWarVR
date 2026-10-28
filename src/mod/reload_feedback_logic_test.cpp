@@ -114,6 +114,32 @@ void mailbox() {
 
 void samples() {
     expect(make_reload_feedback_samples(ReloadFeedbackStep::None) == ReloadFeedbackSamples{}, "none is silent PCM");
+    expect(make_reload_feedback_samples(ReloadFeedbackStep::PouchNearby) == ReloadFeedbackSamples{},
+           "pouch discovery is haptic only, never an invented mechanical reload sound");
+    expect(reload_feedback_amplitude(ReloadFeedbackStep::PouchNearby) == 0.18F &&
+           reload_feedback_duration_seconds(ReloadFeedbackStep::PouchNearby) == 0.025F,
+           "pouch discovery is a brief gentle pulse, not a firing impulse");
+    ReloadFeedbackMailbox pouch_box{};
+    set_reload_feedback_acceptance(&pouch_box, true, 1000);
+    expect(queue_reload_feedback_event(&pouch_box, ReloadFeedbackStep::PouchNearby,
+               ReloadFeedbackHand::Left, 1, 1000) &&
+           !queue_reload_feedback_event(&pouch_box, ReloadFeedbackStep::PouchNearby,
+               ReloadFeedbackHand::Left, 1, 1000),
+           "pouch entry follows the same freshness and per-action deduplication policy");
+    expect(consume_reload_feedback_events(&pouch_box, 1001).count == 1,
+           "pouch entry is dispatched at most once");
+    const ReloadFeedbackCue proximity{ReloadFeedbackStep::PouchNearby,ReloadFeedbackHand::Left,1,1000,1};
+    const ReloadFeedbackCue mechanical{ReloadFeedbackStep::Grabbed,ReloadFeedbackHand::Left,1,1000,2};
+    ReloadFeedbackBatch competing{};
+    competing.cues[0]=proximity; competing.cues[1]=mechanical; competing.count=2;
+    expect(!reload_feedback_priority_allows(proximity,competing,false,false) &&
+           reload_feedback_priority_allows(mechanical,competing,true,true),
+           "accepted mechanical feedback beats discovery regardless of cue order");
+    competing.count=1;
+    expect(!reload_feedback_priority_allows(proximity,competing,true,false) &&
+           !reload_feedback_priority_allows(proximity,competing,false,true) &&
+           reload_feedback_priority_allows(proximity,competing,false,false),
+           "a still-active mechanical/firing pulse is never cut short by proximity");
     for (const auto step : {ReloadFeedbackStep::Ejected, ReloadFeedbackStep::Grabbed,
          ReloadFeedbackStep::Inserted, ReloadFeedbackStep::ActionOpened, ReloadFeedbackStep::ActionClosed,
          ReloadFeedbackStep::ChargeReady}) {

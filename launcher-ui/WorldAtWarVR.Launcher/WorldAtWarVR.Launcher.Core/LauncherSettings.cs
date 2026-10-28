@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Globalization;
 
 namespace WorldAtWarVR.Launcher.Core;
 
@@ -50,6 +51,9 @@ public sealed record LauncherSettings
     public bool AutomaticReload { get; init; }
     public bool ButtonGrenades { get; init; }
     public bool SmoothTurning { get; init; }
+    public double WeaponPitchDegrees { get; init; }
+    public double WeaponYawDegrees { get; init; }
+    public double WeaponRollDegrees { get; init; }
     public VrResolutionPreset Resolution { get; init; } = VrResolutionPreset.Recommended;
 
     public LauncherSettings Normalize()
@@ -64,8 +68,22 @@ public sealed record LauncherSettings
             GameDirectory = directory,
             LaunchTarget = target,
             Resolution = resolution,
+            WeaponPitchDegrees = PersonalWeaponAlignment.NormalizeAngle(WeaponPitchDegrees),
+            WeaponYawDegrees = PersonalWeaponAlignment.NormalizeAngle(WeaponYawDegrees),
+            WeaponRollDegrees = PersonalWeaponAlignment.NormalizeAngle(WeaponRollDegrees),
         };
     }
+}
+
+// Personal controller fit only: never guess a Quest-specific preset or alter
+// the accepted exact weapon sight/impact profiles. Invalid settings reset to
+// neutral rather than silently creating an extreme clamped angle.
+public static class PersonalWeaponAlignment
+{
+    public const double MaximumDegrees = 35;
+
+    public static double NormalizeAngle(double value) =>
+        double.IsFinite(value) && Math.Abs(value) <= MaximumDegrees ? value : 0;
 }
 
 public static class GameplayOptionEnvironment
@@ -74,6 +92,9 @@ public static class GameplayOptionEnvironment
     public const string ButtonGrenadesVariable = "WAWVR_BUTTON_GRENADES";
     public const string TurnModeVariable = "WAWVR_TURN_MODE";
     public const string DeferXrBeginFrameVariable = "WAWVR_DEFER_XR_BEGIN_FRAME";
+    public const string WeaponPitchVariable = "WAWVR_WEAPON_PITCH_DEGREES";
+    public const string WeaponYawVariable = "WAWVR_WEAPON_YAW_DEGREES";
+    public const string WeaponRollVariable = "WAWVR_WEAPON_ROLL_DEGREES";
 
     public static void ApplyTo(
         IDictionary<string, string?> childEnvironment,
@@ -99,6 +120,11 @@ public static class GameplayOptionEnvironment
             // The runtime retains its VirtualDesktopXR allowlist. Explicitly
             // disable this SP timing policy for other launcher targets.
             [DeferXrBeginFrameVariable] = settings.LaunchTarget == GameLaunchTarget.MainMenu ? "1" : "0",
+            // Explicit zero clears an inherited fit too. Read once per game
+            // process; changing these controls applies on the next launch.
+            [WeaponPitchVariable] = PersonalWeaponAlignment.NormalizeAngle(settings.WeaponPitchDegrees).ToString("G", CultureInfo.InvariantCulture),
+            [WeaponYawVariable] = PersonalWeaponAlignment.NormalizeAngle(settings.WeaponYawDegrees).ToString("G", CultureInfo.InvariantCulture),
+            [WeaponRollVariable] = PersonalWeaponAlignment.NormalizeAngle(settings.WeaponRollDegrees).ToString("G", CultureInfo.InvariantCulture),
         };
     }
 }

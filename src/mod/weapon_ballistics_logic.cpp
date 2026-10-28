@@ -6,6 +6,14 @@
 
 namespace wawvr::mod {
 
+bool published_weapon_muzzle_matches_identity(
+    const PublishedWeaponMuzzleSnapshot& snapshot,const std::uint32_t definition,
+    const std::int32_t weapon_index) noexcept {
+    return snapshot.valid&&definition&&weapon_index>0&&weapon_index<128&&
+        snapshot.owner_dobj&&snapshot.owner_definition==definition&&
+        snapshot.owner_weapon_index==weapon_index;
+}
+
 bool hitscan_uses_tag_flash_forward(
     const std::string_view internal_weapon_name) noexcept {
     return internal_weapon_name == "ppsh" || internal_weapon_name == "svt40";

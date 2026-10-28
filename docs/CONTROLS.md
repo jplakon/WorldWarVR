@@ -90,6 +90,41 @@ labels. This is a targeted gameplay beta, not all-controller certification.
 
 ### Pistols and manual magazine reloads
 
+The compact ammunition-pouch marker appears near the free-hand hip while a
+manual reload is waiting for replacement ammunition. Look down toward the hip
+to see the amber AMMO marker; it is not pinned to a corner of the headset. It turns
+green and gives a gentle vibration when the free hand enters the grab area.
+The original hip reach is retained, with an additional raised, forward reach
+over your lap for seated play. Looking down or tilting your head does not tilt
+the pouch. Release the grip, reach into the area, then squeeze deliberately;
+hovering alone never grabs ammunition. The marker disappears while holding a
+magazine, during insertion, or when ammunition/tracking is unavailable.
+
+### Personal weapon-hand angle
+
+The launcher's **Right weapon-hand angle** controls provide optional pitch,
+yaw and roll adjustment (up to 35 degrees either way), plus a reset to zero.
+Leave these at zero unless your physical controller-to-weapon angle needs
+adjustment. Positive pitch raises the muzzle; positive yaw turns it left.
+Changes apply on the next game launch. The same adjusted right-hand aim feeds
+the visible weapon and native aiming; existing weapon-specific sight
+calibrations are retained. This is personal right-hand fit, not an automatic
+Quest 2 preset, a positional offset, or independent left-dominant calibration.
+If impacts land above otherwise aligned iron sights, these controls are not
+the remedy: they rotate the visible weapon and shot together. The exact
+starting Zombies Colt separately stabilizes native firing-animation tilt
+before calculating its existing mesh-derived sight ray. Beta.8 expands measured,
+model-specific alignment across audited conventional Campaign/Zombies weapons,
+including selected wet, bayonet, bipod and upgraded variants. Supported iron-sight
+profiles use their actual sight geometry, not a line from the lower grip to the
+muzzle; barrel-axis profiles are a separate category, not iron-sight zeros.
+Scopes use separate exact-model camera/lens handling. This is not a universal
+offset, every installed variant, or a claim that all scopes and special
+projectiles have passed impact and headset checks. Native recoil and spread
+remain. Report the exact weapon/map if a sight picture still lands incorrectly.
+
+### Weapon-specific reload notes
+
 - Hold the pistol with right grip, bring the left hand beside the firing hand,
   and hold left grip for close two-hand support. The support fingers close
   around the grip; the right controller continues to aim even when the
@@ -293,5 +328,5 @@ user-owned compatible World at War 1.7 executable and links to its existing
 data without modifying the installation.
 
 The experimental contextual enemy-grenade pickup/throwback shortcut is not
-enabled in beta.6. Existing belt/button grenade controls above remain; do not
+enabled in beta.8. Existing belt/button grenade controls above remain; do not
 use private diagnostic builds as the public release.

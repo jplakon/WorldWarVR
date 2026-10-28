@@ -1,22 +1,26 @@
-World War VR v0.4.0-beta.6 source reference
+World War VR v0.4.0-beta.8 source reference
 
-Public source/tag: https://github.com/jplakon/WorldWarVR/tree/v0.4.0-beta.6
-Public release: https://github.com/jplakon/WorldWarVR/releases/tag/v0.4.0-beta.6
+Public source/tag: https://github.com/jplakon/WorldWarVR/tree/v0.4.0-beta.8
+Public release: https://github.com/jplakon/WorldWarVR/releases/tag/v0.4.0-beta.8
 Pinned OpenXR source commit: 64f2b37c8c6da3d83c9b4d11865ba1fb752cb8ec
 
-The complete corresponding source is supplied as WorldWarVR-v0.4.0-beta.6-Source.zip
+The complete corresponding source is supplied as WorldWarVR-v0.4.0-beta.8-Source.zip
 beside the portable binary. It includes the pinned OpenXR submodule contents,
 which GitHub's automatic source archives do not include.
 
-The release Source ZIP replaces this reference with a generated SOURCE-SNAPSHOT.txt
-listing the release commit and SHA-256 hashes of the included source files.
-The manifest excludes itself to avoid a circular hash dependency.
+The Source ZIP records its release revision and source-file manifest separately.
+Those generated records exclude themselves where necessary to avoid circular
+hash dependencies. GitHub automatic tag ZIPs are not the complete dependency
+bundle and are not a playable download.
 
-Component mapping: root native src/ and launcher/ contain the reviewed
-source32-based Colt01 source for the retained tested beta.6 native DLL/helper.
-Root launcher-ui/ retains beta.5 behavior with beta.6 source/version metadata.
-See release/COMPONENT-SOURCE-beta6.md and release/NATIVE-SOURCE-SHA256.txt.
-Historical component-source/beta4 sources and notices remain preserved.
+Root src/, launcher/, launcher-ui/ and their build inputs contain the corresponding
+current source. Accepted gameplay/helper/managed binaries are retained unchanged;
+the managed launcher's internal beta.7 version/source labels are not the beta.8
+release identity. See release/COMPONENT-SOURCE-beta8.md for exact component hashes.
+Historical component-source/beta4 sources and notices remain preserved. The
+complete Source ZIP includes the pinned OpenXR SDK contents as well as the
+submodule reference. Rebuild instructions are in README.md; identical bytes
+across different compiler/toolchain paths are not promised.
 
 Read CHANGELOG.md and KNOWN-ISSUES.md for actual test scope and remaining issues.
 No game files, saves, credentials, customer diagnostics, or Git metadata are included.

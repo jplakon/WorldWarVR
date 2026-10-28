@@ -4,8 +4,8 @@
 
 namespace wawvr::xr { class OpenXrRuntime; struct FrameState; }
 namespace wawvr::mod {
-// Producers supply accepted physical transitions only. No audio or OpenXR
-// API is called from these game-thread entry points.
+// Producers supply accepted physical transitions or bounded pouch-entry
+// discovery cues only. No audio or OpenXR API is called by these producers.
 void queue_manual_reload_feedback(ReloadFeedbackStep step, ReloadFeedbackHand hand,
                                   std::uint64_t action_sequence) noexcept;
 void reset_manual_reload_feedback() noexcept;

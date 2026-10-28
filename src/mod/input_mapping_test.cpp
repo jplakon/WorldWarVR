@@ -3,6 +3,7 @@
 #include "controller_state.hpp"
 #include "current_head_local_controller_pose_logic.hpp"
 #include "input_mapping.hpp"
+#include "personal_weapon_alignment.hpp"
 #include "weapon_placement.hpp"
 
 #include "t4/usercmd.hpp"
@@ -1940,6 +1941,49 @@ void test_automatic_body_yaw_sync_requires_sprint_movement() {
           "stale controller frames block automatic body yaw");
 }
 
+void test_personal_weapon_alignment_shared_publication() {
+    mod::clear_controller_frame();
+    mod::reset_controller_weapon_publication_filters();
+    xr::FrameState frame{};
+    frame.frame_id = 900;
+    frame.actions.sequence = 901;
+    frame.actions.focused = true;
+    frame.views_valid = true;
+    auto& right = frame.actions.hands[1];
+    right.grip.active = right.grip.position_valid = true;
+    right.grip.pose.position = {0.25F, 1.1F, -0.5F};
+    right.aim.active = right.aim.orientation_valid = true;
+    frame.actions.hands[0] = right;
+    frame.actions.hands[0].grip.pose.position.x = -0.25F;
+    const auto left_before = frame.actions.hands[0];
+    const auto grip_before = right.grip;
+    check(mod::apply_personal_weapon_alignment({12.0F, -7.0F, 9.0F}, &frame),
+        "personal fit fixture applies before production publication");
+    xr::Posef anchor{};
+    mod::publish_controller_frame(frame, anchor);
+    mod::ControllerFrameSnapshot snapshot{};
+    check(mod::read_controller_frame(&snapshot), "calibrated publication is readable");
+    check(std::memcmp(&snapshot.frame.actions.hands[0], &left_before, sizeof(left_before)) == 0 &&
+        std::memcmp(&snapshot.frame.actions.hands[1].grip, &grip_before, sizeof(grip_before)) == 0,
+        "publication preserves left pouch/controller and right grip position");
+    mod::ControllerWeaponPose raw{};
+    mod::ControllerWeaponPose filtered{};
+    check(mod::right_controller_weapon_pose(snapshot, snapshot.publication_milliseconds, &raw) &&
+        mod::published_controller_weapon_pose(snapshot, xr::Hand::Right,
+            snapshot.publication_milliseconds, &filtered),
+        "raw authoritative and filtered rendering pose paths consume the calibrated publication");
+    check(near(raw.aim_axis.forward.x, filtered.aim_axis.forward.x) &&
+        near(raw.aim_axis.forward.y, filtered.aim_axis.forward.y) &&
+        near(raw.aim_axis.forward.z, filtered.aim_axis.forward.z),
+        "seeded visible weapon and authoritative pose share the same calibrated forward ray");
+    float native_pitch{}, native_yaw{};
+    check(mod::controller_aim_degrees(snapshot, {}, &native_pitch, &native_yaw) &&
+        near(native_pitch, -12.0F) && near(native_yaw, -7.0F),
+        "native fallback aim receives personal pitch/yaw with correct IW signs");
+    mod::clear_controller_frame();
+    mod::reset_controller_weapon_publication_filters();
+}
+
 void test_controller_frame_broker() {
     mod::clear_controller_frame();
     mod::ControllerFrameSnapshot read{};
@@ -2697,6 +2741,7 @@ int main() {
     test_combined_gameplay_controls_preserve_deliberate_melee<t4::UsercmdMp>(false);
     test_combined_gameplay_controls_preserve_deliberate_melee<t4::UsercmdMp>(true);
     test_controller_frame_broker();
+    test_personal_weapon_alignment_shared_publication();
     test_controller_publication_owns_weapon_filter();
     test_controller_publication_adaptive_quiet_aim();
     test_current_head_local_publication_lifecycle();

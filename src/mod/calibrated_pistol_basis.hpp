@@ -24,6 +24,9 @@ struct CalibratedPistolProof final {
     std::uint64_t witness_fingerprint{};
     std::uint32_t model{},sight_bone{},skeleton_timestamp{};
     wawvr::xr::Vec3f rear_reference{},front_reference{},local_direction{},world_direction{};
+    // Same double-read native skeleton witness as the exact sight geometry;
+    // used only to cancel animated j_gun steering in the rendered outer root.
+    wawvr::xr::Basis3f evaluated_root_basis{};
 };
 enum class CalibratedPistolStatus : std::uint8_t {
     accepted,not_applicable,inaccessible,identity,binding,geometry,hidden,unevaluated,stale,unstable,invalid_axis,

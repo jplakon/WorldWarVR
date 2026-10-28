@@ -3,6 +3,7 @@
 #include "xr_types.h"
 #include "physical_scope_layout.hpp"
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
@@ -22,6 +23,20 @@ struct PhysicalScopeProfile final {
     // legacy grip-relative fallback. Do not draw a floating lens if their
     // evaluated optic tag is unavailable during a scripted weapon change.
     bool requires_model_tag{};
+    // Explicit model lookup never falls back to a name-only profile. Some
+    // Zombie weapon names resolve to different map-owned model families.
+    const char* exact_model_name{};
+    // Non-null selects a reviewed model point owned by this exact bone/tag,
+    // rather than the generic tag_scope + weapon-local legacy correction.
+    const char* lens_owner_tag{};
+    std::uint8_t lens_owner_bone{};
+    wawvr::xr::Vec3f lens_center_model_space{};
+    std::array<float, 8> lens_owner_bind{};
+    std::uint8_t lens_surface_index{};
+    std::uint16_t lens_center_vertex{};
+    std::uint16_t lens_vertex_count{};
+    std::uint16_t lens_triangle_count{};
+    const char* lens_material_name{};
 };
 
 struct PhysicalScopeSnapshot final {
@@ -47,6 +62,18 @@ struct PhysicalScopeSnapshot final {
 
 [[nodiscard]] const PhysicalScopeProfile* find_physical_scope_profile(
     std::string_view internal_weapon_name) noexcept;
+[[nodiscard]] const PhysicalScopeProfile* find_physical_scope_profile(
+    std::string_view internal_weapon_name,
+    std::string_view exact_model_name) noexcept;
+
+// The caller must evaluate this profile's actual owner tag in the current
+// canonical DObj. Transform model-space point by inverse full bind, then by
+// that owner's evaluated world transform. Failure leaves output unchanged.
+[[nodiscard]] bool evaluate_physical_scope_owned_lens(
+    const PhysicalScopeProfile* profile,
+    const wawvr::xr::Vec3f& actual_owner_origin_world,
+    const wawvr::xr::Basis3f& actual_owner_axis_world,
+    wawvr::xr::Vec3f* output_lens_world) noexcept;
 
 [[nodiscard]] bool build_physical_scope_snapshot(
     const PhysicalScopeProfile* profile,

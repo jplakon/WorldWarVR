@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include "manual_reload_controller_logic.hpp"
+#include "reload_pouch_logic.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -162,20 +163,12 @@ bool verify_manual_stripper_clip_fanout(
 
 bool manual_reload_right_waist_contains(
     const ManualReloadPoint& head_local) noexcept {
-    return std::isfinite(head_local.x) && std::isfinite(head_local.y) &&
-           std::isfinite(head_local.z) &&
-           head_local.x >= -18.0F && head_local.x <= 24.0F &&
-           head_local.y >= -24.0F && head_local.y <= -2.0F &&
-           head_local.z >= -42.0F && head_local.z <= -14.0F;
+    return reload_pouch_contains({head_local.x, head_local.y, head_local.z}, false);
 }
 
 bool manual_reload_left_waist_contains(
     const ManualReloadPoint& head_local) noexcept {
-    return std::isfinite(head_local.x) && std::isfinite(head_local.y) &&
-           std::isfinite(head_local.z) &&
-           head_local.x >= -18.0F && head_local.x <= 24.0F &&
-           head_local.y >= 2.0F && head_local.y <= 24.0F &&
-           head_local.z >= -42.0F && head_local.z <= -14.0F;
+    return reload_pouch_contains({head_local.x, head_local.y, head_local.z}, true);
 }
 
 bool calculate_manual_reload_top_feed_receiver(

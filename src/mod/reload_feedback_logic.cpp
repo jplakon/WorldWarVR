@@ -41,6 +41,7 @@ const char* reload_feedback_step_name(const ReloadFeedbackStep step) noexcept {
     case ReloadFeedbackStep::ActionOpened: return "action-open";
     case ReloadFeedbackStep::ActionClosed: return "action-close";
     case ReloadFeedbackStep::ChargeReady: return "charge-ready";
+    case ReloadFeedbackStep::PouchNearby: return "pouch-nearby";
     default: return "none";
     }
 }
@@ -53,6 +54,7 @@ float reload_feedback_amplitude(const ReloadFeedbackStep step) noexcept {
     case ReloadFeedbackStep::ActionOpened: return 0.22F;
     case ReloadFeedbackStep::ActionClosed: return 0.32F;
     case ReloadFeedbackStep::ChargeReady: return 0.30F;
+    case ReloadFeedbackStep::PouchNearby: return 0.18F;
     default: return 0.0F;
     }
 }
@@ -65,6 +67,7 @@ float reload_feedback_duration_seconds(const ReloadFeedbackStep step) noexcept {
     case ReloadFeedbackStep::ActionOpened: return 0.025F;
     case ReloadFeedbackStep::ActionClosed: return 0.045F;
     case ReloadFeedbackStep::ChargeReady: return 0.035F;
+    case ReloadFeedbackStep::PouchNearby: return 0.025F;
     default: return 0.0F;
     }
 }
@@ -93,7 +96,7 @@ bool queue_reload_feedback_event(
     if (!valid_clock(*box, now)) { disarm(box); return false; }
     const auto step_index = static_cast<unsigned>(step);
     const auto hand_index = static_cast<unsigned>(hand);
-    if (step_index == 0 || step_index > 6 || hand_index > 1 || sequence == 0 ||
+    if (step_index == 0 || step_index > 7 || hand_index > 1 || sequence == 0 ||
         sequence < box->last_action_sequence) return false;
     if (sequence != box->last_action_sequence) {
         box->last_action_sequence = sequence;
@@ -126,7 +129,8 @@ ReloadFeedbackBatch consume_reload_feedback_events(
 
 ReloadFeedbackSamples make_reload_feedback_samples(const ReloadFeedbackStep step) noexcept {
     ReloadFeedbackSamples samples{};
-    if (step == ReloadFeedbackStep::None || reload_feedback_amplitude(step) == 0.0F) return samples;
+    if (step == ReloadFeedbackStep::None || step == ReloadFeedbackStep::PouchNearby ||
+        reload_feedback_amplitude(step) == 0.0F) return samples;
     const auto kind = static_cast<std::uint32_t>(step);
     std::uint32_t noise = 0x49C17U + kind;
     const float frequency = 820.0F + static_cast<float>(kind) * 137.0F;
@@ -145,6 +149,19 @@ ReloadFeedbackSamples make_reload_feedback_samples(const ReloadFeedbackStep step
             loudness * attack * tail * envelope * (0.65F * noise_value + 0.35F * ring));
     }
     return samples;
+}
+
+bool reload_feedback_priority_allows(const ReloadFeedbackCue& cue,
+    const ReloadFeedbackBatch& batch, const bool owned_pulse_active,
+    const bool firing_pulse_active) noexcept {
+    if (cue.step != ReloadFeedbackStep::PouchNearby) return true;
+    if (owned_pulse_active || firing_pulse_active) return false;
+    for (std::size_t index=0; index < batch.count && index < batch.cues.size(); ++index) {
+        const auto& other = batch.cues[index];
+        if (other.hand == cue.hand && other.step != ReloadFeedbackStep::None &&
+            other.step != ReloadFeedbackStep::PouchNearby) return false;
+    }
+    return true;
 }
 
 }  // namespace wawvr::mod

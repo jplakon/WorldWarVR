@@ -216,6 +216,29 @@
                     </StackPanel>
 
                     <StackPanel Spacing="8">
+                        <TextBlock Style="{StaticResource SectionHeadingStyle}" Text="RIGHT WEAPON-HAND ANGLE" />
+                        <TextBlock FontSize="15" TextWrapping="Wrap" Style="{StaticResource SecondaryTextStyle}"
+                            Text="Optional controller fit, not a sight fix. Leave at zero unless the weapon angle feels wrong. Changes apply on the next game launch; aim and the visible weapon stay together." />
+                        <StackPanel Orientation="Horizontal" Spacing="16">
+                            <NumberBox x:Name="WeaponPitchNumberBox" Header="Pitch (+ raises muzzle)"
+                                AutomationProperties.HelpText="Personal weapon pitch in degrees. Positive raises the muzzle, negative lowers it. Applies next game launch."
+                                Minimum="-35" Maximum="35" SmallChange="1" LargeChange="5" Value="0"
+                                SpinButtonPlacementMode="Inline" ValueChanged="WeaponAlignment_ValueChanged" />
+                            <NumberBox x:Name="WeaponYawNumberBox" Header="Yaw (+ turns left)"
+                                AutomationProperties.HelpText="Personal weapon yaw in degrees. Positive turns left. Applies next game launch."
+                                Minimum="-35" Maximum="35" SmallChange="1" LargeChange="5" Value="0"
+                                SpinButtonPlacementMode="Inline" ValueChanged="WeaponAlignment_ValueChanged" />
+                            <NumberBox x:Name="WeaponRollNumberBox" Header="Roll"
+                                AutomationProperties.HelpText="Personal weapon roll in degrees around the controller aim ray. Applies next game launch."
+                                Minimum="-35" Maximum="35" SmallChange="1" LargeChange="5" Value="0"
+                                SpinButtonPlacementMode="Inline" ValueChanged="WeaponAlignment_ValueChanged" />
+                        </StackPanel>
+                        <Button x:Name="ResetWeaponAlignmentButton" Content="Reset weapon angle to zero"
+                            AutomationProperties.HelpText="Reset all three personal weapon angles to zero for the next game launch"
+                            Click="ResetWeaponAlignment_Click" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="8">
                         <TextBlock Style="{StaticResource SectionHeadingStyle}" Text="TURNING" />
                         <CheckBox
                             x:Name="SmoothTurningCheckBox"

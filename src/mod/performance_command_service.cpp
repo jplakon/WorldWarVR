@@ -4,6 +4,8 @@
 #include "performance_command_logic.hpp"
 #include "present_hook_logic.hpp"
 #include "stereo_diagnostics.hpp"
+#include "t4_menu_input.hpp"
+#include "finite_aim_grant_logic.hpp"
 
 #include <windows.h>
 
@@ -42,11 +44,8 @@ void configure_performance_command_service(const bool single_player) noexcept {
         static_cast<DWORD>(g_command_path.size()));
     // Local absolute paths only: do not block the native frame thread on UNC
     // network reads or resolve a changing process working directory.
-    if (size < 4 || size >= g_command_path.size() ||
-        !((g_command_path[0] >= L'A' && g_command_path[0] <= L'Z') ||
-          (g_command_path[0] >= L'a' && g_command_path[0] <= L'z')) ||
-        g_command_path[1] != L':' ||
-        (g_command_path[2] != L'\\' && g_command_path[2] != L'/')) {
+    if (size >= g_command_path.size() ||
+        !finite_aim_local_command_path_valid({g_command_path.data(),size})) {
         return;
     }
     g_next_poll = 0;
@@ -130,7 +129,7 @@ void service_performance_command_file_after_com_frame(
             bytes_read, key_catchers, connection_state);
         return;
     }
-    const auto id = performance_command_id_name(request.id);
+    const auto id = performance_command_id_name(request);
     if (!performance_command_nonce_is_fresh(request, g_last_consumed_nonce)) {
         stereo_diagnostic_log(
             "PerfCommandDiag ignored nonce=%llu id=%s reason=stale last=%llu keyCatchers=0x%X connection=%d",
@@ -142,8 +141,21 @@ void service_performance_command_file_after_com_frame(
     // Consume before calling the engine seam: even a failed queue never
     // repeats a toggle/load on every frame. A retry needs a fresh nonce.
     g_last_consumed_nonce = request.nonce;
+    if(request.id==PerformanceCommandId::test_aim_weapon){
+        const auto result=simulator_grant_registered_aim_weapon_after_com_frame(
+            request.aim_weapon_index,validated_cbuf_address);
+        // Retain the command protocol's success ACK word for existing finite
+        // drivers. It means the native selector was submitted, not observed
+        // held-weapon identity, completed transition, or native aiming proof.
+        stereo_diagnostic_log(
+            "PerfCommandDiag ack nonce=%llu id=%s status=%s simulator=1 keyCatchers=0x%X connection=%d route=registered-native-grant nativeResult=%s actualHeldIdentityStillRequired=1",
+            static_cast<unsigned long long>(request.nonce),id.data(),
+            result==FiniteAimGrantResult::selection_submitted?"queued":"native-grant-failed",
+            key_catchers,connection_state,finite_aim_grant_result_name(result));
+        return;
+    }
     const auto command = performance_command_native_text(
-        request.id, (key_catchers & kT4ConsoleKeyCatcher) != 0);
+        request, (key_catchers & kT4ConsoleKeyCatcher) != 0);
     const bool already_closed = request.id == PerformanceCommandId::console_close &&
         command.empty();
     const bool queued = !command.empty() && queue(validated_cbuf_address, command.data());

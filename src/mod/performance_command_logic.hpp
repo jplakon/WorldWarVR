@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "all_weapon_aim_test_catalogue.hpp"
+
 namespace wawvr::mod {
 
 inline constexpr std::size_t kPerformanceCommandMaximumBytes = 128;
@@ -44,13 +46,25 @@ enum class PerformanceCommandId : std::uint8_t {
     test_kar98k,
     test_ammo,
     test_observe_safely,
+    test_load_factory,
+    test_load_asylum,
+    test_load_pel2,
+    test_load_oki2,
+    test_aim_weapon,
+    test_load_mak_event2,
+    test_load_oki2_event2,
+    test_load_sniper_event4,
+    test_load_ber3_reich,
 };
 
 struct PerformanceCommandRequest final {
     std::uint64_t nonce{};
     PerformanceCommandId id{PerformanceCommandId::none};
+    std::uint16_t aim_weapon_index{kInvalidAllWeaponAimTestIndex};
     [[nodiscard]] bool valid() const noexcept {
-        return nonce != 0 && id != PerformanceCommandId::none;
+        return nonce != 0 && id != PerformanceCommandId::none &&
+            (id != PerformanceCommandId::test_aim_weapon ||
+             aim_weapon_index < kAllWeaponAimTestDefinitions.size());
     }
 };
 
@@ -59,10 +73,14 @@ struct PerformanceCommandRequest final {
     std::string_view text) noexcept;
 [[nodiscard]] std::string_view performance_command_id_name(
     PerformanceCommandId id) noexcept;
+[[nodiscard]] std::string_view performance_command_id_name(
+    const PerformanceCommandRequest& request) noexcept;
 // All nonempty results have static storage and a terminating newline and NUL.
 // Closing an already closed console intentionally yields an empty command.
 [[nodiscard]] std::string_view performance_command_native_text(
     PerformanceCommandId id, bool console_open) noexcept;
+[[nodiscard]] std::string_view performance_command_native_text(
+    const PerformanceCommandRequest& request, bool console_open) noexcept;
 [[nodiscard]] bool performance_command_nonce_is_fresh(
     const PerformanceCommandRequest& request,
     std::uint64_t last_consumed_nonce) noexcept;

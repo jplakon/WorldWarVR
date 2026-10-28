@@ -117,6 +117,7 @@ void positive() {
     check(f.derive(&out,&proof)==CalibratedPistolStatus::accepted,"exact native Colt witness refused");
     check(proof.witness_fingerprint==0xF5FD9FB14247F922ULL&&proof.model==0x40000&&proof.sight_bone==71&&proof.skeleton_timestamp==77,"wrong proof identity");
     check(out.forward.x>.99999F&&out.forward.z>.0009F&&out.forward.z<.0011F,"Colt inverse-bind cancellation or measured slope is wrong");
+    check(near(proof.evaluated_root_basis.forward,{1,0,0}),"root proof did not use the same evaluated native Colt skeleton");
     check(f.memory.bytes<12000&&f.memory.reads<300,"small production witness became unbounded full mesh read");
     const auto baseline=out.forward;
     for(const auto q:std::array<std::array<float,4>,7>{{{0,0,0,1},{0,0,.70710678F,.70710678F},{0,0,-.70710678F,.70710678F},
@@ -124,6 +125,7 @@ void positive() {
         Fixture rotated;rotated.world_rotation(q);
         check(rotated.derive(&out,&proof)==CalibratedPistolStatus::accepted,"rotated/rolled Colt refused");
         check(near(out.forward,compose(basis(q),baseline)),"Colt correction became global pitch/head forward or lost bind inverse");
+        check(near(proof.evaluated_root_basis.forward,basis(q).forward),"rotated root proof lost same-snapshot native orientation");
     }
     Fixture age;age.request.now_milliseconds=1150;
     check(age.derive(&out)==CalibratedPistolStatus::accepted,"inclusive original150ms freshness boundary refused");

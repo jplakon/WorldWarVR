@@ -4,6 +4,36 @@ All notable public changes to World War VR are recorded here.
 
 The project follows semantic versioning where practical. Versions with an `alpha`, `beta`, or release-candidate suffix are pre-release builds and can still change incompatibly.
 
+## v0.4.0-beta.8
+
+Ammo Pouch & Aiming Update.
+
+- Added a compact, binocular near-hip AMMO/GRIP marker and gentle discovery
+  vibration while a manual reload is waiting for replacement ammunition.
+- Preserved standing hip reach and added a raised forward-lap reach for seated
+  play. Looking down does not pitch/roll the pouch; a deliberate fresh grip is
+  still required to take ammunition.
+- Expanded measured weapon/model-specific aiming across audited conventional
+  Campaign/Zombies variants, including selected wet, bayonet, bipod and upgraded
+  models. Retained native recoil/spread and the starting Nacht Colt's firing-tilt
+  stabilization. No universal offset is applied to unknown variants.
+- Added optional right weapon-hand pitch/yaw/roll controls for personal fit.
+  Defaults are zero; changes apply on the next launch and rotate the visible
+  weapon and its aim together rather than independently moving impacts.
+- Refined exact-model scope camera/lens handling, including PTRS variants.
+
+The retained gameplay DLL passed 114 native tests. OpenXR Tester correlated
+203 native shot traces across 76 ordinary weapon/model pairs (68 iron-sight,
+8 barrel-axis). Ten of twelve scope implementation pairs received optical-policy
+observations, not scope-impact qualification. The build received positive local
+headset feedback, not every weapon/headset/distance certification or a full
+Campaign replay. Low FPS/stutter remains open; enemy-grenade throwback stays
+disabled. Regional Compatibility Test1's launcher correction is not included.
+
+Accepted binaries are retained; internal managed-launcher beta.7 version/source
+labels remain. Public filenames, checksums and the beta.8 component map identify
+this release. Matching source, pinned dependencies and original notices accompany it.
+
 ## v0.4.0-beta.7
 
 Targeted jungle foliage visibility and detail update.

@@ -76,6 +76,22 @@ struct ManualReloadViewmodelContext final {
     bool player_command_time_valid{};
 };
 
+// Read-only discovery marker. Center is in the same OpenXR tracking space as
+// FrameState views (meters), not engine/world or head-pitched coordinates.
+// A current snapshot exists only for an eligible, free feed hand while the
+// reload is waiting for ammunition. No marker ever grants inventory.
+struct ManualReloadPouchHint final {
+    bool available{};
+    bool hovered{};
+    bool left_hand{true};
+    wawvr::xr::Vec3f center_tracking{};
+    wawvr::xr::Vec3f half_extent_units{};
+    std::uint64_t action_sequence{};
+    std::uint64_t published_milliseconds{};
+};
+[[nodiscard]] bool read_manual_reload_pouch_hint(
+    ManualReloadPouchHint* hint) noexcept;
+
 [[nodiscard]] ManualReloadRuntimeInstallResult install_manual_reload_runtime(
     const wawvr::t4::ValidatedBindings& bindings) noexcept;
 

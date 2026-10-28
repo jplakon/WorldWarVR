@@ -18,6 +18,7 @@ std::uint64_t g_reset_generation{};
 // Everything below is touched only by the XR owner thread.
 std::uint64_t g_serviced_reset_generation{};
 std::array<std::uint64_t, 2> g_pulse_expires_at{};
+std::uint64_t g_firing_pulse_expires_at{};
 
 bool diagnostics_enabled() noexcept {
     static const bool enabled = [] {
@@ -144,6 +145,7 @@ void initialize_audio() noexcept {
 // saturation drop this cue without changing gameplay or retrying it.
 const char* submit_audio(const ReloadFeedbackCue& cue, MMRESULT* result) noexcept {
     *result = MMSYSERR_NOERROR;
+    if (cue.step == ReloadFeedbackStep::PouchNearby) return "haptic-only";
     if (!audio_enabled()) return "disabled";
     if (g_audio_slots == nullptr) { *result = MMSYSERR_NOMEM; return "unavailable"; }
     AudioSlot* available = nullptr;
@@ -165,6 +167,9 @@ const char* submit_audio(const ReloadFeedbackCue& cue, MMRESULT* result) noexcep
 
 void notify_firing_haptic_overrode_reload() noexcept {
     g_pulse_expires_at[static_cast<std::size_t>(ReloadFeedbackHand::Right)] = 0;
+    // Firing is serviced last in an XR interval. Protect the rest of its
+    // existing 50ms pulse from a proximity cue on subsequent intervals too.
+    g_firing_pulse_expires_at = GetTickCount64()+50;
 }
 
 void reset_manual_reload_feedback() noexcept {
@@ -216,7 +221,7 @@ void service_manual_reload_feedback(wawvr::xr::OpenXrRuntime& runtime,
             g_pulse_expires_at[hand] = 0;
         }
     }
-    if (!allowed) return;
+    if (!allowed) { g_firing_pulse_expires_at = 0; return; }
     initialize_audio();
     for (std::size_t index = 0; index < batch.count; ++index) {
         const auto& cue = batch.cues[index];
@@ -229,6 +234,10 @@ void service_manual_reload_feedback(wawvr::xr::OpenXrRuntime& runtime,
         if (!still_current) break;
         if (!hand_usable(*frame, cue.hand)) continue;
         const auto hand = static_cast<std::size_t>(cue.hand);
+        if (!reload_feedback_priority_allows(cue, batch,
+                g_pulse_expires_at[hand] > dispatch_now,
+                cue.hand == ReloadFeedbackHand::Right &&
+                    g_firing_pulse_expires_at > dispatch_now)) continue;
         const bool haptic_accepted = runtime.ApplyHaptic(static_cast<wawvr::xr::Hand>(hand),
             reload_feedback_amplitude(cue.step), reload_feedback_duration_seconds(cue.step), 0.0F);
         if (haptic_accepted) g_pulse_expires_at[hand] = dispatch_now + static_cast<std::uint64_t>(

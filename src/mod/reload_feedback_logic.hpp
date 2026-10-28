@@ -11,6 +11,7 @@ namespace wawvr::mod {
 
 enum class ReloadFeedbackStep : std::uint8_t {
     None, Ejected, Grabbed, Inserted, ActionOpened, ActionClosed, ChargeReady,
+    PouchNearby,
 };
 enum class ReloadFeedbackHand : std::uint8_t { Left, Right };
 
@@ -56,6 +57,11 @@ void clear_reload_feedback_pending(ReloadFeedbackMailbox* mailbox) noexcept;
     ReloadFeedbackHand hand, std::uint64_t sequence, std::uint64_t now) noexcept;
 [[nodiscard]] ReloadFeedbackBatch consume_reload_feedback_events(
     ReloadFeedbackMailbox* mailbox, std::uint64_t now) noexcept;
+// Discovery is dispensable. Accepted mechanical transitions and an existing
+// mechanical/firing pulse always win, independent of batch ordering.
+[[nodiscard]] bool reload_feedback_priority_allows(
+    const ReloadFeedbackCue& cue, const ReloadFeedbackBatch& batch,
+    bool owned_pulse_active, bool firing_pulse_active) noexcept;
 
 // Original procedural mechanical clicks; no game or third-party recording.
 // Fixed 80 ms mono PCM with bounded volume and silence at both boundaries.

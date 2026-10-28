@@ -44,6 +44,12 @@ void test_publication_freshness() {
           "clock rollback is rejected");
     check(!published_weapon_muzzle_is_fresh(fresh, 0, 1'000),
           "zero controller generation is rejected");
+    auto diagnostic = fresh;
+    diagnostic.diagnostic_basis_route = 255;
+    diagnostic.diagnostic_colt_status = 255;
+    check(published_weapon_muzzle_is_fresh(diagnostic, 104, 1'150) &&
+              !published_weapon_muzzle_is_fresh(diagnostic, 105, 1'150),
+          "diagnostic provenance cannot change the production freshness gate");
 
     auto invalid = fresh;
     invalid.valid = false;
@@ -920,6 +926,22 @@ void test_fixed_ads_visual_spread_override() {
 }  // namespace
 
 int main() {
+    {
+        auto owner=fresh_muzzle();
+        owner.owner_definition=0xB60000U;
+        owner.owner_weapon_index=7;
+        owner.owner_dobj=0x1F90000U;
+        check(published_weapon_muzzle_matches_identity(owner,0xB60000U,7),
+            "exact published model owner should match");
+        check(!published_weapon_muzzle_matches_identity(owner,0xB60004U,7)&&
+            !published_weapon_muzzle_matches_identity(owner,0xB60000U,8)&&
+            !published_weapon_muzzle_matches_identity(owner,0,7)&&
+            !published_weapon_muzzle_matches_identity(owner,0xB60000U,0),
+            "fresh prior-weapon muzzle must not leak through a switch");
+        owner.owner_dobj=0;
+        check(!published_weapon_muzzle_matches_identity(owner,0xB60000U,7),
+            "unowned muzzle cannot authorize a firing correction");
+    }
     test_publication_freshness();
     test_local_bullet_gate();
     test_authoritative_weapon_basis_override();

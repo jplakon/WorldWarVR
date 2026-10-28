@@ -181,6 +181,8 @@ CalibratedPistolStatus derive_calibrated_pistol_basis(const CalibratedPistolRead
     status=read_asset(reader,request,second); if (status!=CalibratedPistolStatus::accepted) return status;
     if (!same(first,second)) return CalibratedPistolStatus::unstable;
     CalibratedPistolProof measured{};
+    if (!bone_basis(first.evaluated[0],measured.evaluated_root_basis))
+        return CalibratedPistolStatus::invalid_axis;
     measured.witness_fingerprint=first.fingerprint; measured.model=first.model_address;
     measured.sight_bone=first.hands_bones+1; measured.skeleton_timestamp=first.timestamp;
     measured.front_reference=mean(first.anchors[0],first.anchors[1]);

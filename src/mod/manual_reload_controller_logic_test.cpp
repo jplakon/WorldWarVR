@@ -795,6 +795,68 @@ void test_detachable_feed_zone_is_on_the_left_waist() {
            "a left hand near the pistol cannot also count as the hip belt");
 }
 
+void test_seated_pouch_preserves_explicit_transaction_edges() {
+    ManualReloadControllerState state{};
+    auto frame = tracked_kar98();
+    frame.profile_kind = ReloadProfileKind::DetachableMagazine;
+    static_cast<void>(update_manual_reload_controller(frame,&state));
+    frame.action_sequence=2; frame.begin_reload_pressed_edge=true;
+    auto update=update_manual_reload_controller(frame,&state);
+    expect(update.reload.stage == ReloadStage::FeedDeviceAvailable,
+        "seated access still starts only after the normal deliberate reload action");
+    frame.begin_reload_pressed_edge=false;
+    frame.hand_in_feed_device_zone=manual_reload_left_waist_contains({18,16,-11});
+    for (int hovering=0; hovering<120; ++hovering) {
+        ++frame.action_sequence;
+        update=update_manual_reload_controller(frame,&state);
+        expect(update.reload.stage == ReloadStage::FeedDeviceAvailable &&
+            !update.reload.render_detached_feed_device && !update.reload.request_native_commit,
+            "proximity/highlight at the seated lap neither grabs nor transfers ammo");
+    }
+    ++frame.action_sequence; frame.hand_in_feed_device_zone=false; frame.feed_grip_held=true;
+    static_cast<void>(update_manual_reload_controller(frame,&state));
+    ++frame.action_sequence; frame.hand_in_feed_device_zone=true;
+    update=update_manual_reload_controller(frame,&state);
+    expect(update.reload.stage == ReloadStage::FeedDeviceAvailable,
+        "bringing an already-squeezed hand into the enlarged pouch does not invent a fresh pickup edge");
+    ++frame.action_sequence; frame.feed_grip_held=false;
+    static_cast<void>(update_manual_reload_controller(frame,&state));
+    ++frame.action_sequence; frame.feed_grip_held=true;
+    update=update_manual_reload_controller(frame,&state);
+    expect(update.reload.event == ReloadEvent::FeedDeviceGrabbed &&
+        update.reload.render_detached_feed_device && !update.reload.request_native_commit,
+        "one fresh squeeze in the seated lap owns one device but no ammo transfer");
+    for (int repeated=0; repeated<8; ++repeated) {
+        update=update_manual_reload_controller(frame,&state);
+        expect(update.reload.event == ReloadEvent::None && !update.reload.request_native_commit,
+            "repeated eye callbacks cannot duplicate pickup or ammo");
+    }
+    ++frame.action_sequence; frame.hand_in_feed_device_zone=false;
+    frame.hand_in_insertion_zone=true;
+    update=update_manual_reload_controller(frame,&state);
+    expect(update.reload.stage == ReloadStage::NearInsertionPoint && !update.reload.request_native_commit,
+        "seated pickup keeps the original deliberate insertion rule");
+    ++frame.action_sequence; frame.feed_grip_held=false;
+    update=update_manual_reload_controller(frame,&state);
+    expect(update.reload.event == ReloadEvent::CommitRequested && update.reload.request_native_commit,
+        "one release at the well creates exactly one physical commit event");
+    for (int retry=0; retry<32; ++retry) {
+        ++frame.action_sequence;
+        update=update_manual_reload_controller(frame,&state);
+        expect(update.reload.request_native_commit && update.reload.event != ReloadEvent::CommitRequested,
+            "retained native retries do not manufacture another physical reload request");
+    }
+    ++frame.action_sequence; frame.native_commit_completed=true;
+    update=update_manual_reload_controller(frame,&state);
+    expect(update.reload.event == ReloadEvent::CommitCompleted && update.reload.stage == ReloadStage::Ready,
+        "only authoritative completion restores the normal loaded weapon state");
+    frame.native_commit_completed=false; frame.can_reload=false;
+    ++frame.action_sequence; frame.begin_reload_pressed_edge=true;
+    update=update_manual_reload_controller(frame,&state);
+    expect(update.reload.stage == ReloadStage::Ready && !update.reload.request_native_commit,
+        "the larger pouch cannot create ammo when native inventory is ineligible");
+}
+
 void test_scoped_segmented_stripper_clip_plans_full_capacity() {
     const ManualStripperClipCommitInput scoped{
         .weapon_state = 0,
@@ -1148,6 +1210,7 @@ int main() {
     test_receiver_tracks_the_clip_along_the_rifle_top();
     test_feed_zone_is_on_the_right_waist();
     test_detachable_feed_zone_is_on_the_left_waist();
+    test_seated_pouch_preserves_explicit_transaction_edges();
     test_scoped_segmented_stripper_clip_plans_full_capacity();
     test_unsegmented_stripper_clip_keeps_one_native_top_up();
     test_stripper_clip_plan_rejects_unprovable_ammo_state();

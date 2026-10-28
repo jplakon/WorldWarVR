@@ -25,7 +25,10 @@ void exact_allowlist() {
         "test_load_pel1", "test_load_ber1", "test_load_sniper", "test_load_ber3", "test_colt", "test_garand",
         "test_carbine", "test_thompson", "test_type100", "test_bar",
         "test_springfield", "test_mosin", "test_svt", "test_ppsh",
-        "test_kar98k", "test_ammo", "test_observe_safely"};
+        "test_kar98k", "test_ammo", "test_observe_safely",
+        "test_load_factory", "test_load_asylum", "test_load_pel2",
+        "test_load_oki2", "test_load_mak_event2", "test_load_oki2_event2",
+        "test_load_sniper_event4", "test_load_ber3_reich"};
     for (const auto* const name : names) {
         const auto request = parse_performance_command_request(std::string("42 ") + name);
         require(request.valid() && request.nonce == 42, "every exact allowlisted id parses");
@@ -43,6 +46,24 @@ void exact_allowlist() {
         "devmap sniper\n", "Vendetta is a fixed simulator fixture, not arbitrary command text");
     require(performance_command_native_text(PerformanceCommandId::test_load_ber3, false) ==
         "devmap ber3\n", "Accepted SVT mission is a fixed simulator fixture");
+    require(performance_command_native_text(PerformanceCommandId::test_load_mak_event2, false) ==
+        "set start event2\ndevmap mak\n", "Makin checkpoint exactly reuses the existing Pacific magazine fixture");
+    require(performance_command_native_text(PerformanceCommandId::test_load_oki2_event2, false) ==
+        "set start event2\nspdevmap oki2\n", "Okinawa checkpoint exactly reuses the existing wet inventory fixture");
+    require(performance_command_native_text(PerformanceCommandId::test_load_sniper_event4, false) ==
+        "set start event4\nspdevmap sniper\n", "Vendetta checkpoint exactly reuses the existing scoped Mosin fixture");
+    require(performance_command_native_text(PerformanceCommandId::test_load_ber3_reich, false) ==
+        "set start reich\nspdevmap ber3\n", "Ber3 checkpoint exactly reuses the existing Russian magazine fixture");
+    for (const auto* const name : {"test_load_mak_event2", "test_load_oki2_event2",
+                                  "test_load_sniper_event4", "test_load_ber3_reich"}) {
+        const auto request = parse_performance_command_request(std::string("732 ") + name);
+        require(request.valid() && performance_command_id_name(request) == name &&
+            performance_command_native_text(request, true) ==
+                performance_command_native_text(request.id, false) &&
+            performance_command_nonce_is_fresh(request, 731) &&
+            !performance_command_nonce_is_fresh(request, 732),
+            "exact checkpoint requests preserve fixed text, full request identity and replay protection");
+    }
     require(performance_command_native_text(PerformanceCommandId::test_mosin, false) ==
         "take all\ngive mosin_rifle\n", "Mosin fixture uses the observed registered unscoped weapon name");
     require(parse_performance_command_request("9 fxdraw0\n").valid() &&
@@ -55,7 +76,10 @@ void malformed_and_injection_rejected() {
         "1", "1 ", " 1 fxdraw0", "1\tfxdraw0", "1  fxdraw0", "1 fxdraw0 ",
         "1 FXDRAW0", "1 fxdraw2", "1 quit", "1 loadgame oki3-perf.svg",
         "1 fxdraw0;quit", "1 fxdraw0\nquit", "1 fxdraw0\n2 fxdraw1\n",
-        "1 fxdraw0\n\n", "18446744073709551616 fxdraw0", "1e2 fxdraw0"};
+        "1 fxdraw0\n\n", "18446744073709551616 fxdraw0", "1e2 fxdraw0",
+        "1 test_load_mak_event3", "1 test_load_oki2_event4",
+        "1 test_load_sniper_event4;quit", "1 test_load_ber3_reich\nquit",
+        "1 test_load_mak_event2 event4", "1 set start event2"};
     for (const auto* const text : invalid) {
         require(!parse_performance_command_request(text).valid(), "malformed and injected requests rejected");
     }
@@ -78,12 +102,72 @@ void nonce_and_console_rules() {
     require(performance_command_native_text(PerformanceCommandId::console_close, true) == "toggleconsole\n", "open console closes through fixed native command");
     require(performance_command_native_text(PerformanceCommandId::toggleconsole, false) == "toggleconsole\n", "explicit toggle remains available");
 }
+
+void finite_all_weapon_aim_fixtures() {
+    require(kAllWeaponAimTestDefinitions.size() == 129,
+        "finite installed SP and existing source-fixture inventory is explicit");
+    std::size_t index = 0;
+    for (const auto& fixture : kAllWeaponAimTestDefinitions) {
+        const auto text = std::string("731 ") + std::string(fixture.request_name);
+        const auto request = parse_performance_command_request(text);
+        require(request.valid() && request.nonce == 731 &&
+            request.id == PerformanceCommandId::test_aim_weapon &&
+            request.aim_weapon_index == index,
+            "every finite exact weapon request parses with its own index");
+        require(performance_command_id_name(request) == fixture.request_name,
+            "full request preserves exact weapon name in native ACK");
+        const auto command = performance_command_native_text(request, false);
+        require(command == fixture.native_text && command.back() == '\n' &&
+            command.data()[command.size()] == '\0',
+            "every fixture returns static newline and NUL terminated text");
+        const auto expected = std::string("take weapons\nwait 30\ngive ") +
+            std::string(fixture.weapon) + "\ngive ammo\n";
+        require(command == expected,
+            "native inventory fixture is exact literal and contains no caller text");
+        require(command.find("god") == std::string_view::npos &&
+            command.find("notarget") == std::string_view::npos,
+            "cycling a fixture never toggles map protection off");
+        require(performance_command_nonce_is_fresh(request, 730) &&
+            !performance_command_nonce_is_fresh(request, 731),
+            "weapon selection obeys the existing no-replay nonce gate");
+        for (std::size_t earlier = 0; earlier < index; ++earlier) {
+            require(kAllWeaponAimTestDefinitions[earlier].request_name !=
+                fixture.request_name, "fixture request names are unique");
+        }
+        ++index;
+    }
+    constexpr std::array rejected{
+        "1 test_aim_", "1 test_aim_COLT", "1 test_aim_nonexistent",
+        "1 test_aim_defaultweapon", "1 test_aim_pby_20mm",
+        "1 test_aim_zombie_melee", "1 test_aim_colt;quit",
+        "1 test_aim_colt\nquit", "1 test_aim_colt ",
+        "1 test_aim_colt\n2 test_aim_bar", "1 test_aim_colt;give ammo"};
+    for (const auto* text : rejected) {
+        require(!parse_performance_command_request(text).valid(),
+            "unknown, excluded, case-changed and injected aim fixtures reject");
+    }
+    PerformanceCommandRequest invalid{9,
+        PerformanceCommandId::test_aim_weapon,
+        static_cast<std::uint16_t>(kAllWeaponAimTestDefinitions.size())};
+    require(!invalid.valid() &&
+        performance_command_native_text(invalid, true).empty() &&
+        performance_command_id_name(invalid) == "invalid",
+        "out-of-bounds fixture index cannot reach static text");
+    invalid.aim_weapon_index = kInvalidAllWeaponAimTestIndex;
+    require(!invalid.valid() &&
+        performance_command_native_text(invalid, false).empty(),
+        "default invalid index never aliases the first weapon");
+    require(performance_command_native_text(
+        PerformanceCommandId::test_aim_weapon, false).empty(),
+        "legacy id-only API cannot silently choose a weapon");
+}
 }  // namespace
 
 int main() {
     exact_allowlist();
     malformed_and_injection_rejected();
     nonce_and_console_rules();
+    finite_all_weapon_aim_fixtures();
     std::cout << "Performance command allowlist, parser and replay checks passed\n";
     return 0;
 }

@@ -23,7 +23,20 @@ struct PublishedWeaponMuzzleSnapshot final {
     // Measurement-only receipt. It never participates in production aim,
     // freshness or profile selection; zero when sight diagnostics are off.
     std::uint64_t diagnostic_publication_serial{};
+    // Observation only: 0 unavailable, 1 grip segment, 2 exact flash,
+    // 3 calibrated rifle, 4 calibrated Colt, 5 physical launcher.
+    std::uint8_t diagnostic_basis_route{};
+    std::uint8_t diagnostic_colt_status{1};
+    // Production identity: a fresh pose from a different selected weapon is
+    // never authority for the current gun, even within the generation budget.
+    std::uint32_t owner_definition{};
+    std::int32_t owner_weapon_index{-1};
+    std::uintptr_t owner_dobj{};
 };
+
+[[nodiscard]] bool published_weapon_muzzle_matches_identity(
+    const PublishedWeaponMuzzleSnapshot&,std::uint32_t definition,
+    std::int32_t weapon_index) noexcept;
 
 // Pure fail-closed freshness check shared by the game-thread hook and tests.
 // T4 normally consumes the last rendered weapon pose a few command generations

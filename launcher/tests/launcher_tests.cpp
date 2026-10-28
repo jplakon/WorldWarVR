@@ -793,6 +793,9 @@ namespace
             L"STEAMGAMEID=old",
             L"WAWVR_TURN_MODE=smooth",
             L"WAWVR_RIGHT_STICK_MELEE=0",
+            L"WAWVR_WEAPON_PITCH_DEGREES=-12.5",
+            L"WAWVR_WEAPON_YAW_DEGREES=3",
+            L"WAWVR_WEAPON_ROLL_DEGREES=0",
             L"WAWVR_DEFER_XR_BEGIN_FRAME=1",
             L"XR_RUNTIME_JSON=C:\\Pimax\\Runtime\\PiOpenXR_32.json",
             L"WAWVR_OPENXR_RUNTIME_SELECTION=pimax-x86",
@@ -835,6 +838,9 @@ namespace
                      count_case_insensitive(L"Path=C:\\Windows") == 1 &&
                      count_case_insensitive(L"WAWVR_TURN_MODE=smooth") == 1 &&
                      count_case_insensitive(L"WAWVR_RIGHT_STICK_MELEE=0") == 1 &&
+                     count_case_insensitive(L"WAWVR_WEAPON_PITCH_DEGREES=-12.5") == 1 &&
+                     count_case_insensitive(L"WAWVR_WEAPON_YAW_DEGREES=3") == 1 &&
+                     count_case_insensitive(L"WAWVR_WEAPON_ROLL_DEGREES=0") == 1 &&
                      count_case_insensitive(L"WAWVR_DEFER_XR_BEGIN_FRAME=1") == 1 &&
                      count_case_insensitive(
                          L"XR_RUNTIME_JSON=C:\\Pimax\\Runtime\\PiOpenXR_32.json") == 1 &&

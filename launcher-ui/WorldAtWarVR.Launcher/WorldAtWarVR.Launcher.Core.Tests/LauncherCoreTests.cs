@@ -723,7 +723,7 @@ public sealed class LauncherCoreTests
         Assert.AreEqual("0", defaults[GameplayOptionEnvironment.ButtonGrenadesVariable]);
         Assert.AreEqual("snap", defaults[GameplayOptionEnvironment.TurnModeVariable]);
         Assert.AreEqual("1", defaults[GameplayOptionEnvironment.DeferXrBeginFrameVariable]);
-        Assert.AreEqual(4, defaults.Count);
+        Assert.AreEqual(7, defaults.Count);
 
         var enabled = GameplayOptionEnvironment.Resolve(new LauncherSettings
         {
@@ -735,7 +735,7 @@ public sealed class LauncherCoreTests
         Assert.AreEqual("1", enabled[GameplayOptionEnvironment.ButtonGrenadesVariable]);
         Assert.AreEqual("smooth", enabled[GameplayOptionEnvironment.TurnModeVariable]);
         Assert.AreEqual("1", enabled[GameplayOptionEnvironment.DeferXrBeginFrameVariable]);
-        Assert.AreEqual(4, enabled.Count);
+        Assert.AreEqual(7, enabled.Count);
     }
 
     [DataTestMethod]

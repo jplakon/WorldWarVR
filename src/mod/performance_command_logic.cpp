@@ -45,6 +45,16 @@ constexpr std::array kCommands{
     CommandDefinition{PerformanceCommandId::test_kar98k, "test_kar98k", "take all\ngive kar98k\n"},
     CommandDefinition{PerformanceCommandId::test_ammo, "test_ammo", "give ammo\n"},
     CommandDefinition{PerformanceCommandId::test_observe_safely, "test_observe_safely", "god\nnotarget\n"},
+    CommandDefinition{PerformanceCommandId::test_load_factory, "test_load_factory", "devmap nazi_zombie_factory\n"},
+    CommandDefinition{PerformanceCommandId::test_load_asylum, "test_load_asylum", "devmap nazi_zombie_asylum\n"},
+    CommandDefinition{PerformanceCommandId::test_load_pel2, "test_load_pel2", "devmap pel2\n"},
+    CommandDefinition{PerformanceCommandId::test_load_oki2, "test_load_oki2", "devmap oki2\n"},
+    // Exact existing t4_menu_input checkpoint fixtures, exposed only through
+    // the same explicit Tester-module, finite-command and nonce gates.
+    CommandDefinition{PerformanceCommandId::test_load_mak_event2, "test_load_mak_event2", "set start event2\ndevmap mak\n"},
+    CommandDefinition{PerformanceCommandId::test_load_oki2_event2, "test_load_oki2_event2", "set start event2\nspdevmap oki2\n"},
+    CommandDefinition{PerformanceCommandId::test_load_sniper_event4, "test_load_sniper_event4", "set start event4\nspdevmap sniper\n"},
+    CommandDefinition{PerformanceCommandId::test_load_ber3_reich, "test_load_ber3_reich", "set start reich\nspdevmap ber3\n"},
 };
 }  // namespace
 
@@ -83,6 +93,13 @@ PerformanceCommandRequest parse_performance_command_request(
             return {nonce, command.id};
         }
     }
+    for (std::size_t index = 0;
+         index < kAllWeaponAimTestDefinitions.size(); ++index) {
+        if (name == kAllWeaponAimTestDefinitions[index].request_name) {
+            return {nonce, PerformanceCommandId::test_aim_weapon,
+                    static_cast<std::uint16_t>(index)};
+        }
+    }
     return {};
 }
 
@@ -107,6 +124,28 @@ std::string_view performance_command_native_text(
         }
     }
     return {};
+}
+
+std::string_view performance_command_id_name(
+    const PerformanceCommandRequest& request) noexcept {
+    if (!request.valid()) {
+        return "invalid";
+    }
+    if (request.id == PerformanceCommandId::test_aim_weapon) {
+        return kAllWeaponAimTestDefinitions[request.aim_weapon_index].request_name;
+    }
+    return performance_command_id_name(request.id);
+}
+
+std::string_view performance_command_native_text(
+    const PerformanceCommandRequest& request, const bool console_open) noexcept {
+    if (!request.valid()) {
+        return {};
+    }
+    if (request.id == PerformanceCommandId::test_aim_weapon) {
+        return kAllWeaponAimTestDefinitions[request.aim_weapon_index].native_text;
+    }
+    return performance_command_native_text(request.id, console_open);
 }
 
 bool performance_command_nonce_is_fresh(

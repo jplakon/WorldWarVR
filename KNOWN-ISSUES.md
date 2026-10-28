@@ -1,6 +1,29 @@
 # Known issues
 
-World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent changes received focused tests rather than another complete Campaign replay on the final beta.7 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+World War VR is beta software. The creator completed the Campaign in VR during development leading to beta.1. Subsequent changes received focused tests rather than another complete Campaign replay on the final beta.8 package. Local/offline Multiplayer remains experimental. Save progress and expect compatibility or presentation issues.
+
+## Beta.8 acceptance scope
+
+- The ammo-pouch reach/marker and expanded aiming build received positive local
+  headset feedback. This is not an enumerated all-weapon, all-distance, scope or
+  Quest 2 acceptance run, and affected reporters should retest their exact case.
+- The retained gameplay DLL passed 114 native tests. Focused OpenXR Tester work
+  correlated 203 native shot traces across 76 ordinary weapon/model pairs:
+  68 iron-sight and 8 barrel-axis pairs. Barrel alignment is not an iron-sight
+  zero; native recoil, spread and finite-distance parallax remain.
+- Separate scope camera/lens policy was observed for 10 of 12 exact-model
+  implementation profiles. That evidence is not authoritative scope-impact,
+  near/mid/far-zero or physical-headset qualification. Base scoped Kar98k and
+  scoped FG42 lack current policy observations; unusual and custom variants
+  can still need individual work. Explosive/projectile weapons are separate.
+- Personal right weapon-hand angles adjust fit, not sight/impact calibration;
+  defaults remain zero. No automatic Quest 2 preset, positional adjustment or
+  independent left-dominant calibration is provided.
+- Low FPS/stutter remains open, enemy-grenade throwback remains disabled, and
+  Regional Compatibility Test1's Campaign validation correction is not included.
+- The accepted native and managed binaries are retained byte-for-byte. Internal
+  launcher version/source labels can still say beta.7; use the beta.8 filenames,
+  checksums and component map to identify the release.
 
 ## Beta.7 acceptance scope
 
@@ -10,14 +33,13 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 - Low FPS and stutter remain under investigation. Fuller distant foliage can
   be more demanding. This release does not contain the later private performance
   experiments or promise COD4 VR frame rates.
-- The accepted foliage gameplay DLL and native helper are retained unchanged.
-  Launcher version/source metadata and release documentation are updated; the
-  final package has not received another full Campaign or all-headset retest.
+- These are historical beta.7 checks. Beta.8 adds the focused changes above;
+  neither release has received another full Campaign or all-headset retest.
 - Existing beta.6 control, weapon, runtime and regional limitations below remain.
 
 ## Beta.6 acceptance scope
 
-- Exact-profile aiming changes cover the Garand, unscoped Mosin and starting
+- Historical beta.6 exact-profile aiming changes cover the Garand, unscoped Mosin and starting
   Nacht `zombie_colt`, not every pistol, upgraded variant or scope. Five corrected
   Colt native discharge/initial-hit samples followed the current sight geometry,
   including off-headset aiming and genuine two-hand mode; a later local headset
@@ -41,8 +63,8 @@ World War VR is beta software. The creator completed the Campaign in VR during d
 - Experimental practical enemy-grenade throwback remains unresolved and
   hard-disabled. Its new contextual shortcut is not enabled or advertised as
   playable. Existing normal grenade controls remain.
-- The managed launcher retains beta.5 behavior with beta.7 metadata. In
-  particular, Regional-Compatibility Test1's separate Campaign validation fix
+- The launcher adds beta.8's personal-angle controls while retaining its existing
+  installation validation. Regional-Compatibility Test1's separate Campaign fix
   is **not included**. Keep a working Test1 folder intact and ask before replacing
   it. This release does not establish universal German/regional compatibility;
   do not replace game EXEs or buy another edition based on this update alone.

@@ -4,6 +4,9 @@
 #include "bolt_action_weapon_profile.hpp"
 #include "detachable_magazine_weapon_profile.hpp"
 #include "manual_grenade_runtime.hpp"
+#include "manual_reload_runtime.hpp"
+#include "reload_pouch_logic.hpp"
+#include "reload_pouch_projection.hpp"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -13,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -21,6 +25,7 @@
 namespace {
 bool g_button_grenade_fixture{};
 unsigned g_button_grenade_queries{};
+wawvr::mod::ManualReloadPouchHint g_pouch_fixture{};
 }
 namespace wawvr::mod {
 const BoltActionWeaponProfile* find_bolt_action_weapon_profile_by_internal_name(
@@ -29,6 +34,11 @@ bool has_detachable_magazine_weapon_profile_for_internal_name(
     std::string_view) noexcept { return false; }
 std::int32_t read_manual_grenade_throwback_time_left() noexcept { return 0; }
 bool contextual_manual_grenade_throwback_available() noexcept { return false; }
+bool read_manual_reload_pouch_hint(ManualReloadPouchHint* hint) noexcept {
+    if(hint==nullptr) return false;
+    *hint=g_pouch_fixture;
+    return hint->available;
+}
 bool button_grenade_mode_enabled() noexcept {
     ++g_button_grenade_queries;
     return g_button_grenade_fixture;
@@ -338,12 +348,147 @@ void test_central_held_help_across_source_sizes_and_eye_rectangles() {
         }
     }
 }
+void test_actual_pouch_pixels_stereo_and_safety() {
+    Window window;
+    ComPtr<IDirect3D9> d3d;
+    d3d.Attach(Direct3DCreate9(D3D_SDK_VERSION));
+    check(d3d!=nullptr,"create pouch renderer");
+    D3DPRESENT_PARAMETERS p{};
+    p.BackBufferWidth=1280;p.BackBufferHeight=720;p.BackBufferCount=1;
+    p.BackBufferFormat=D3DFMT_A8R8G8B8;p.SwapEffect=D3DSWAPEFFECT_DISCARD;
+    p.hDeviceWindow=window.handle;p.Windowed=TRUE;
+    p.PresentationInterval=D3DPRESENT_INTERVAL_IMMEDIATE;
+    ComPtr<IDirect3DDevice9> device;
+    hr(d3d->CreateDevice(0,D3DDEVTYPE_HAL,window.handle,D3DCREATE_SOFTWARE_VERTEXPROCESSING,&p,&device),
+        "create pouch test device");
+    ComPtr<IDirect3DSurface9> back,readback;
+    hr(device->GetBackBuffer(0,0,D3DBACKBUFFER_TYPE_MONO,&back),"pouch backbuffer");
+    hr(device->CreateOffscreenPlainSurface(1280,720,D3DFMT_A8R8G8B8,D3DPOOL_SYSTEMMEM,&readback,nullptr),
+        "pouch readback");
+    for(float height : {1.2F,1.7F}) for(unsigned optic : {0U,1U,2U})
+        for(const bool left_hand : {false,true}) for(const bool asymmetric : {false,true}) {
+        wawvr::xr::StereoSourceLayout layout{};
+        if(optic) {
+            layout.eyes[0]={0,.125F,.375F,.75F};
+            layout.eyes[1]={.375F,.125F,.375F,.75F};
+            layout.physical_scope.active=true;layout.physical_scope.source={.75F,0,.25F,1};
+        }
+        if(optic==2) {
+            layout.eyes[0]={0,0,.28125F,1};
+            layout.eyes[1]={.28125F,0,.28125F,1};
+            layout.physical_scope.source={.5625F,0,.4375F,1};
+        }
+        wawvr::xr::FrameState frame{};
+        frame.frame_id=1;frame.should_render=true;frame.views_valid=true;
+        frame.actions.focused=true;frame.actions.sequence=10;
+        auto& feed_hand=frame.actions.hands[left_hand?0:1].grip;
+        feed_hand.active=true;
+        feed_hand.position_valid=true;
+        feed_hand.orientation_valid=true;
+        for(unsigned index=0;index<2;++index) {
+            const float pitch=-1.2F;
+            frame.eyes[index].pose={{std::sin(pitch*.5F),0,0,std::cos(pitch*.5F)},
+                {index==0 ? -.032F:.032F,height,0}};
+            frame.eyes[index].fov={-.8F,.8F,.8F,-.8F};
+            if(asymmetric) {
+                auto& eye=frame.eyes[index];
+                eye.fov={index==0?-.942477763F:-.69813168F,
+                    index==0?.69813168F:.942477763F,.767595768F,-.947190166F};
+                const float l=std::tan(eye.fov.angle_left),r=std::tan(eye.fov.angle_right);
+                const float u=std::tan(eye.fov.angle_up),d=std::tan(eye.fov.angle_down);
+                const float sx=2.F*(std::max)(-l,r)/(r-l),sy=2.F*(std::max)(-d,u)/(u-d);
+                layout.destinations[index]={(1.F-(r+l)/(r-l)-sx)*.5F,
+                    (1.F+(u+d)/(u-d)-sy)*.5F,sx,sy};
+            }
+        }
+        wawvr::mod::ReloadPouchUprightFrame upright{};
+        check(wawvr::mod::make_reload_pouch_upright_frame({{}, {0,height,0}},&upright),
+            "build upright hip marker fixture");
+        const auto hip=wawvr::mod::reload_pouch_hip_marker_tracking(upright,left_hand);
+        g_pouch_fixture={true,true,left_hand,hip,{},
+            frame.actions.sequence,GetTickCount64()};
+        for(unsigned mode=0;mode<8;++mode) {
+            hr(device->Clear(0,nullptr,D3DCLEAR_TARGET,0,1,0),"clear pouch pixels");
+            auto run=frame;
+            g_pouch_fixture.published_milliseconds=GetTickCount64();
+            if(mode==2) g_pouch_fixture.published_milliseconds-=1000;
+            if(mode==3) run.actions.focused=false;
+            if(mode==4) run.actions.sequence=1;
+            if(mode==5) run.actions.hands[left_hand?0:1].grip.position_valid=false;
+            if(mode==6) for(auto& eye:run.eyes) eye.pose.orientation={}; // Hip is below forward FoV.
+            if(mode==7) {
+                for(auto& eye:run.eyes) eye.pose.orientation={};
+                g_pouch_fixture.center_tracking={-1.03F,height,-1.F};
+            }
+            else g_pouch_fixture.center_tracking=hip;
+            wawvr::mod::draw_vr_gameplay_prompt_overlay(device.Get(),layout,run,true,mode==1);
+            hr(device->GetRenderTargetData(back.Get(),readback.Get()),"read real pouch pixels");
+            D3DLOCKED_RECT pixels{};
+            hr(readback->LockRect(&pixels,nullptr,D3DLOCK_READONLY),"map pouch pixels");
+            std::array<std::size_t,2> green{};
+            std::array<unsigned,2> min_x{1280,1280},min_y{720,720},max_x{},max_y{};
+            std::size_t outside{},cropped_after_remap{};
+            for(unsigned y=0;y<720;++y) {
+                const auto* row=reinterpret_cast<const std::uint32_t*>(
+                    static_cast<const std::byte*>(pixels.pBits)+y*pixels.Pitch);
+                for(unsigned x=0;x<1280;++x) {
+                    const auto c=row[x];
+                    if(((c>>16)&255)>150 || ((c>>8)&255)<210 || (c&255)<100 || (c&255)>190) continue;
+                    int owner=-1;
+                    for(unsigned eye=0;eye<2;++eye) {
+                        const auto& rect=layout.eyes[eye];
+                        if(x>=rect.x*1280 && x<(rect.x+rect.width)*1280 &&
+                            y>=rect.y*720 && y<(rect.y+rect.height)*720) owner=static_cast<int>(eye);
+                    }
+                    if(owner<0) ++outside;
+                    else {
+                        ++green[owner];
+                        min_x[owner]=(std::min)(min_x[owner],x); max_x[owner]=(std::max)(max_x[owner],x);
+                        min_y[owner]=(std::min)(min_y[owner],y); max_y[owner]=(std::max)(max_y[owner],y);
+                        const auto& rect=layout.eyes[owner];
+                        const auto& dest=layout.destinations[owner];
+                        const float output_u=dest.x+((x+.5F)-rect.x*1280.F)/(rect.width*1280.F)*dest.width;
+                        const float output_v=dest.y+((y+.5F)-rect.y*720.F)/(rect.height*720.F)*dest.height;
+                        if(output_u<0 || output_u>1 || output_v<0 || output_v>1) ++cropped_after_remap;
+                    }
+                }
+            }
+            hr(readback->UnlockRect(),"unmap pouch pixels");
+            check(outside==0,"pouch never paints optic strip or outside eye rectangles");
+            check(cropped_after_remap==0,"actual pouch pixels in both eyes survive asymmetric compositor cropping");
+            if(mode==0) {
+                if(green[0]<=75 || green[1]<=75)
+                    std::fprintf(stderr,"Pouch raster context height=%.2f layout=%u pixels=%zu/%zu\n",height,optic,green[0],green[1]);
+                check(green[0]>75 && green[1]>75,"actual compact hovered pouch pixels in both eyes seated and standing");
+                for(unsigned index=0;index<2;++index) {
+                    const auto& rect=layout.eyes[index];
+                    const auto& dest=layout.destinations[index];
+                    const auto projected=wawvr::mod::project_reload_pouch(hip,frame.eyes[index],dest);
+                    const float actual_center=(static_cast<float>(min_x[index]+max_x[index])+1.F)*.5F;
+                    const float expected_center=(rect.x+projected.center.x*rect.width)*1280.F;
+                    check(std::abs(actual_center-expected_center)<2.F,
+                        "real pouch pixels remain at the true per-eye hip projection");
+                    const auto final_projection=wawvr::mod::project_reload_pouch(hip,frame.eyes[index]);
+                    const float actual_output=dest.x+(actual_center-rect.x*1280.F)/(rect.width*1280.F)*dest.width;
+                    check(std::abs(actual_output-final_projection.center.x)<2.5F*dest.width/(rect.width*1280.F),
+                        "actual raster marker center maps back to the physical runtime-eye projection exactly once");
+                    check(max_x[index]-min_x[index]<45 && max_y[index]-min_y[index]<55,
+                        "new icon and short label stay compact instead of the old large HUD panel");
+                }
+            }
+            else check(green[0]==0 && green[1]==0,
+                "pouch hidden for multiplayer, stale, unfocused, future, lost-hand, forward gaze and asymmetric eye-edge clipping");
+        }
+    }
+    g_pouch_fixture={};
+}
 } // namespace
 
 int main() {
     try {
         test_renderer_pixels_and_native_state_restore();
         test_central_held_help_across_source_sizes_and_eye_rectangles();
+        test_actual_pouch_pixels_stereo_and_safety();
         std::puts("PASS: exact D3D9 overlay pixels in both eyes; native state and menus preserved");
         return 0;
     } catch (const std::exception& error) {

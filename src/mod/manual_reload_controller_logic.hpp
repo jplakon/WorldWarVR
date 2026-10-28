@@ -179,13 +179,13 @@ struct ManualReloadReceiverGeometry final {
     float top_offset{kManualReloadReceiverTopOffset};
 };
 
-// Head-local IW coordinates use +Y to the player's left, so the right-waist
-// inventory zone is the mirrored negative-Y counterpart of the old left belt.
+// Upright head-yaw IW coordinates use +Y left. The standing belt is retained
+// with a raised forward-lap extension for seated play; pitch/roll never move
+// the inventory. Both wrappers share the visual/haptic pouch geometry.
 [[nodiscard]] bool manual_reload_right_waist_contains(
     const ManualReloadPoint& head_local) noexcept;
 
-// Detachable magazines use the off-hand hip. This is the positive-Y mirror
-// of the accepted right-waist stripper-clip volume.
+// Detachable magazines use the left side; clips may use the free hand's side.
 [[nodiscard]] bool manual_reload_left_waist_contains(
     const ManualReloadPoint& head_local) noexcept;
 

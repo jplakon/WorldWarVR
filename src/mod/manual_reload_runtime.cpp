@@ -10,14 +10,17 @@
 #include "magazine_charging_logic.hpp"
 #include "magazine_chamber_lock_table.hpp"
 #include "manual_reload_controller_logic.hpp"
+#include "manual_grenade_runtime.hpp"
 #include "peer_thread_quiescence.hpp"
 #include "resident_page_access.hpp"
 #include "reload_feedback.hpp"
+#include "reload_pouch_logic.hpp"
 #include "rigid_visibility_split.hpp"
 #include "stereo_diagnostics.hpp"
 #include "synthetic_scene_slots.hpp"
 #include "t4_layout_selector.hpp"
 #include "t4_menu_input.hpp"
+#include "t4_presentation_state.hpp"
 #include "viewmodel_filter.hpp"
 #include "vr_gameplay_prompts.hpp"
 #include "weapon_hook.hpp"
@@ -721,6 +724,11 @@ std::deque<CachedClipAsset> g_clip_asset_cache{};
 std::deque<CachedMagazineAsset> g_magazine_asset_cache{};
 std::uint64_t g_clip_asset_source_generation{1};
 std::mutex g_state_mutex;
+std::mutex g_pouch_hint_mutex;
+ManualReloadPouchHint g_pouch_hint{};
+ReloadPouchCueState g_pouch_cue_state{}; // g_state_mutex owner only.
+ReloadPouchUprightFrame g_pouch_last_heading{}; // Same owner, never a held-item pose.
+bool g_pouch_heading_valid{};
 thread_local PreSkinScratch g_pre_skin_scratch{};
 thread_local BoltActionCommitWitness g_bolt_action_commit_witness{};
 thread_local ManualStripperClipCommitKey g_bolt_action_claim_key{};
@@ -901,6 +909,16 @@ template <std::size_t N>
     };
 }
 
+[[nodiscard]] bool current_pouch_upright_frame(
+    const ManualReloadViewmodelContext& context,
+    ReloadPouchUprightFrame* const output) noexcept {
+    if (!make_reload_pouch_upright_frame(context.controller.frame.head_center, output,
+            g_pouch_heading_valid ? &g_pouch_last_heading : nullptr)) return false;
+    g_pouch_last_heading = *output;
+    g_pouch_heading_valid = true;
+    return true;
+}
+
 [[nodiscard]] bool current_hand_pose(
     const ManualReloadViewmodelContext& context,
     const wawvr::xr::Hand hand,
@@ -922,11 +940,12 @@ template <std::size_t N>
     const auto relative = wawvr::xr::OpenXrPoseToIwRelative(
         tracked.grip.pose, context.controller.tracking_anchor,
         wawvr::xr::kIwUnitsPerMeter);
-    const auto relative_to_head = wawvr::xr::OpenXrPoseToIwRelative(
-        tracked.grip.pose, context.controller.frame.head_center,
-        wawvr::xr::kIwUnitsPerMeter);
-    if (!finite_vector(relative.position) || !valid_basis(relative.axis) ||
-        !finite_vector(relative_to_head.position)) {
+    ReloadPouchUprightFrame upright{};
+    ReloadPouchPoint upright_local{};
+    const bool upright_valid = current_pouch_upright_frame(context, &upright) &&
+        reload_pouch_point_from_tracking(upright, tracked.grip.pose.position,
+            &upright_local);
+    if (!finite_vector(relative.position) || !valid_basis(relative.axis)) {
         return false;
     }
     const wawvr::xr::Vec3f world_offset =
@@ -937,8 +956,88 @@ template <std::size_t N>
         context.camera_origin.z + world_offset.z,
     };
     world->axis = compose_axes(context.camera_axis, relative.axis);
-    *head_local = relative_to_head.position;
+    // Only the body interaction coordinate changes. Actual held-item world
+    // pose remains the exact accepted tracking-anchor/camera transform above.
+    const float invalid = (std::numeric_limits<float>::quiet_NaN)();
+    *head_local = upright_valid
+        ? wawvr::xr::Vec3f{upright_local.x, upright_local.y, upright_local.z}
+        : wawvr::xr::Vec3f{invalid, invalid, invalid};
     return finite_vector(world->position) && valid_basis(world->axis);
+}
+
+void clear_manual_reload_pouch_hint_locked() noexcept {
+    g_pouch_cue_state = {};
+    g_pouch_last_heading = {};
+    g_pouch_heading_valid = false;
+    const std::lock_guard<std::mutex> hint_lock(g_pouch_hint_mutex);
+    g_pouch_hint = {};
+}
+
+[[nodiscard]] bool manual_reload_pouch_gameplay_active() noexcept {
+    const auto state = read_t4_presentation_state();
+    return state.valid && state.connection_state == state.active_connection_state &&
+        state.key_catchers == 0;
+}
+
+void publish_manual_reload_pouch_hint_locked(
+    const ManualReloadViewmodelContext& context, const bool left_hand,
+    const bool eligible, const bool pose_valid, const bool hand_busy) noexcept {
+    const auto now = GetTickCount64();
+    const auto& actions = context.controller.frame.actions;
+    const auto& tracked = actions.hands[left_hand ? 0U : 1U];
+    ReloadPouchUprightFrame upright{};
+    ReloadPouchPoint point{};
+    const bool tracking_valid = pose_valid &&
+        current_pouch_upright_frame(context, &upright) &&
+        reload_pouch_point_from_tracking(upright, tracked.grip.pose.position, &point);
+    const bool usable_squeeze = tracked.squeeze.active &&
+        std::isfinite(tracked.squeeze.current);
+    const bool trigger_busy = tracked.trigger.active &&
+        std::isfinite(tracked.trigger.current) && tracked.trigger.current >= 0.50F;
+    const auto cue = update_reload_pouch_cue({
+        .eligible = eligible && actions.focused && usable_squeeze &&
+            manual_reload_pouch_gameplay_active() &&
+            controller_frame_is_current(context.controller, now),
+        .pose_valid = tracking_valid,
+        .hand_busy = hand_busy || trigger_busy ||
+            (left_hand && manual_grenade_reserves_left_hand()),
+        .left_hand = left_hand,
+        .point = point,
+        .action_sequence = actions.sequence,
+        .milliseconds = now,
+    }, &g_pouch_cue_state);
+    ManualReloadPouchHint hint{};
+    if (cue.visible) {
+        hint.available = true;
+        hint.hovered = cue.hovered;
+        hint.left_hand = left_hand;
+        hint.center_tracking = reload_pouch_hip_marker_tracking(upright, left_hand);
+        hint.half_extent_units = {kReloadPouchLapHalfExtent.x,
+            kReloadPouchLapHalfExtent.y, kReloadPouchLapHalfExtent.z};
+        hint.action_sequence = actions.sequence;
+        hint.published_milliseconds = now;
+    }
+    bool changed = false;
+    {
+        const std::lock_guard<std::mutex> hint_lock(g_pouch_hint_mutex);
+        changed = hint.available != g_pouch_hint.available ||
+            hint.hovered != g_pouch_hint.hovered || hint.left_hand != g_pouch_hint.left_hand;
+        g_pouch_hint = hint;
+    }
+    static const bool diagnostics = []() noexcept {
+        wchar_t value[8]{};
+        return GetEnvironmentVariableW(L"WAWVR_RELOAD_POUCH_DIAGNOSTICS", value, 8) == 1 && value[0] == L'1';
+    }();
+    if (diagnostics && (changed || cue.pulse)) stereo_diagnostic_log(
+        "PouchDiag available=%d hovered=%d hand=%s pulse=%d sequence=%llu point=%.3f,%.3f,%.3f centerTracking=%.4f,%.4f,%.4f",
+        hint.available ? 1 : 0, hint.hovered ? 1 : 0, left_hand ? "left" : "right", cue.pulse ? 1 : 0,
+        static_cast<unsigned long long>(actions.sequence), point.x, point.y, point.z,
+        hint.center_tracking.x, hint.center_tracking.y, hint.center_tracking.z);
+    if (cue.pulse) {
+        queue_manual_reload_feedback(ReloadFeedbackStep::PouchNearby,
+            left_hand ? ReloadFeedbackHand::Left : ReloadFeedbackHand::Right,
+            actions.sequence);
+    }
 }
 
 [[nodiscard]] float distance(
@@ -6677,6 +6776,7 @@ extern "C" __declspec(naked) void manual_reload_begin_bridge() noexcept {
 
 void clear_interaction_state_locked() noexcept {
     publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
+    clear_manual_reload_pouch_hint_locked();
     reset_manual_reload_feedback();
     if (g_magazine_visual_state.authored_hidden &&
         !set_authored_magazine_hidden_locked(false)) {
@@ -6810,6 +6910,7 @@ void observe_manual_reload_session(const void* const player_state) noexcept {
 
 void mark_runtime_temporarily_unavailable_locked() noexcept {
     publish_vr_gameplay_reload_hint(VrReloadPromptStage::none);
+    clear_manual_reload_pouch_hint_locked();
     reset_manual_reload_feedback();
     if (g_active_magazine_binding.load(std::memory_order_acquire) != 0) {
         DetachableMagazineWeaponBinding binding{};
@@ -7769,6 +7870,13 @@ void update_detachable_magazine_viewmodel_locked(
     publish_vr_gameplay_reload_hint(input_owned
         ? reload_prompt_stage(update.reload.stage, charging_update.charge_required)
         : VrReloadPromptStage::none);
+    publish_manual_reload_pouch_hint_locked(context, true,
+        input_owned && can_reload &&
+            update.reload.stage == gameplay::ReloadStage::FeedDeviceAvailable,
+        magazine_pose_valid,
+        squeeze_held || context.left_rifle_gripped ||
+            (charging_update.handle_grabbed && charging_update.manipulating_left_hand) ||
+            left_hand_near_charging_handle);
     g_reserve_right_grip.store(
         charging_update.reserve_right_grip,
         std::memory_order_release);
@@ -7816,6 +7924,23 @@ void update_detachable_magazine_viewmodel_locked(
 }
 
 }  // namespace
+
+bool read_manual_reload_pouch_hint(ManualReloadPouchHint* const hint) noexcept {
+    if (hint == nullptr) return false;
+    *hint = {};
+    if (!g_enabled.load(std::memory_order_acquire) ||
+        !g_supported.load(std::memory_order_acquire) ||
+        !manual_reload_pouch_gameplay_active()) return false;
+    try {
+        const auto now = GetTickCount64();
+        const std::lock_guard<std::mutex> hint_lock(g_pouch_hint_mutex);
+        if (!g_pouch_hint.available || g_pouch_hint.published_milliseconds == 0 ||
+            now < g_pouch_hint.published_milliseconds ||
+            now-g_pouch_hint.published_milliseconds > 100) return false;
+        *hint = g_pouch_hint;
+        return true;
+    } catch (...) { return false; }
+}
 
 bool resolve_t4_script_string(
     const char* const name,
@@ -9094,6 +9219,14 @@ void update_manual_reload_viewmodel(
         publish_vr_gameplay_reload_hint(input_owned && feed_visual_ready
             ? reload_prompt_stage(update.reload.stage, bolt_update.cycle_required)
             : VrReloadPromptStage::none);
+        publish_manual_reload_pouch_hint_locked(context, feed_left,
+            input_owned && feed_visual_ready && bolt_commit_plan.valid &&
+                feed_hand != StripperClipFeedHand::None && bolt_update.action_open &&
+                update.reload.stage == gameplay::ReloadStage::FeedDeviceAvailable,
+            feed_pose_valid,
+            feed_squeeze_held || (feed_left ? context.left_rifle_gripped : context.right_rifle_gripped) ||
+                (bolt_update.bolt_grabbed && feed_left == bolt_update.manipulating_left_hand) ||
+                (feed_left ? left_hand_near_bolt : right_hand_near_bolt));
         g_manual_active.store(
             update.reload.manual_reload_active,
             std::memory_order_release);

@@ -91,6 +91,19 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         calibrated_pistol_basis.cpp
         calibrated_pistol_basis.hpp
         calibrated_pistol_recipe.hpp
+        field_rifle_sight_basis.cpp
+        field_rifle_sight_basis.hpp
+        field_rifle_sight_recipe.hpp
+        field_rifle_root_alignment.hpp
+        field_rifle_shot_audit.cpp
+        field_rifle_shot_audit.hpp
+        sight_geometry_basis.cpp
+        sight_geometry_basis.hpp
+        sight_geometry_root_alignment.hpp
+        all_weapon_sight_geometry_bank.cpp
+        all_weapon_sight_geometry_bank.hpp
+        sight_geometry_shot_audit.cpp
+        sight_geometry_shot_audit.hpp
         sight_bind_transform.hpp
         server_impact_install_diagnostic.hpp
         native_prompt_binding_hook.hpp
@@ -159,6 +172,9 @@ if(TARGET wawvr_xr AND TARGET wawvr_t4)
         manual_reload_controller_logic.hpp
         manual_reload_runtime.cpp
         manual_reload_runtime.hpp
+        reload_pouch_logic.hpp
+        reload_pouch_projection.hpp
+        personal_weapon_alignment.hpp
         rigid_visibility_split.cpp
         rigid_visibility_split.hpp
         shared_feed_geometry_runtime.inl
@@ -282,10 +298,22 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
     target_link_libraries(WorldAtWarVRRigidVisibilitySplitTest PRIVATE wawvr_project_options)
     target_include_directories(WorldAtWarVRRigidVisibilitySplitTest PRIVATE "${PROJECT_SOURCE_DIR}/src")
     add_test(NAME mod.rigid_visibility_split COMMAND WorldAtWarVRRigidVisibilitySplitTest)
-    add_executable(WorldAtWarVRGameplayPromptOverlayTest vr_gameplay_prompt_overlay.cpp vr_gameplay_prompts.cpp vr_gameplay_prompt_overlay_test.cpp)
+    add_executable(WorldAtWarVRGameplayPromptOverlayTest vr_gameplay_prompt_overlay.cpp vr_gameplay_prompts.cpp vr_gameplay_prompt_overlay_test.cpp "${PROJECT_SOURCE_DIR}/src/xr/xr_math.cpp")
     target_link_libraries(WorldAtWarVRGameplayPromptOverlayTest PRIVATE wawvr_project_options d3d9 user32)
     target_include_directories(WorldAtWarVRGameplayPromptOverlayTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr" "${PROJECT_SOURCE_DIR}/src")
     add_test(NAME mod.vr_gameplay_prompt_overlay COMMAND WorldAtWarVRGameplayPromptOverlayTest)
+    add_executable(WorldAtWarVRReloadPouchLogicTest reload_pouch_logic_test.cpp)
+    target_link_libraries(WorldAtWarVRReloadPouchLogicTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRReloadPouchLogicTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.reload_pouch_logic COMMAND WorldAtWarVRReloadPouchLogicTest)
+    add_executable(WorldAtWarVRReloadPouchProjectionTest reload_pouch_projection_test.cpp "${PROJECT_SOURCE_DIR}/src/xr/xr_math.cpp")
+    target_link_libraries(WorldAtWarVRReloadPouchProjectionTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRReloadPouchProjectionTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.reload_pouch_projection COMMAND WorldAtWarVRReloadPouchProjectionTest)
+    add_executable(WorldAtWarVRPersonalWeaponAlignmentTest personal_weapon_alignment_test.cpp "${PROJECT_SOURCE_DIR}/src/xr/xr_math.cpp")
+    target_link_libraries(WorldAtWarVRPersonalWeaponAlignmentTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRPersonalWeaponAlignmentTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.personal_weapon_alignment COMMAND WorldAtWarVRPersonalWeaponAlignmentTest)
     add_executable(WorldAtWarVRGameplayPromptsTest vr_gameplay_prompts.cpp vr_gameplay_prompts_test.cpp)
     target_link_libraries(WorldAtWarVRGameplayPromptsTest PRIVATE wawvr_project_options)
     add_test(NAME mod.vr_gameplay_prompts COMMAND WorldAtWarVRGameplayPromptsTest)
@@ -327,6 +355,41 @@ if(WAWVR_BUILD_TESTS AND BUILD_TESTING)
     target_link_libraries(WorldAtWarVRCalibratedPistolBasisTest PRIVATE wawvr_project_options)
     target_include_directories(WorldAtWarVRCalibratedPistolBasisTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
     add_test(NAME mod.calibrated_pistol_basis COMMAND WorldAtWarVRCalibratedPistolBasisTest)
+    add_executable(WorldAtWarVRColtRootAlignmentTest colt_root_alignment_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRColtRootAlignmentTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRColtRootAlignmentTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.colt_root_alignment COMMAND WorldAtWarVRColtRootAlignmentTest)
+    add_executable(WorldAtWarVRFieldRifleSightBasisTest field_rifle_sight_basis.cpp field_rifle_sight_basis_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRFieldRifleSightBasisTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRFieldRifleSightBasisTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.field_rifle_sight_basis COMMAND WorldAtWarVRFieldRifleSightBasisTest)
+    add_executable(WorldAtWarVRFieldRifleRootAlignmentTest field_rifle_root_alignment_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRFieldRifleRootAlignmentTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRFieldRifleRootAlignmentTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.field_rifle_root_alignment COMMAND WorldAtWarVRFieldRifleRootAlignmentTest)
+    add_executable(WorldAtWarVRFieldRifleShotAuditTest field_rifle_shot_audit.cpp field_rifle_shot_audit_test.cpp)
+    target_link_libraries(WorldAtWarVRFieldRifleShotAuditTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRFieldRifleShotAuditTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.field_rifle_shot_audit COMMAND WorldAtWarVRFieldRifleShotAuditTest)
+    add_executable(WorldAtWarVRSightGeometryBasisTest sight_geometry_basis.cpp sight_geometry_basis_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRSightGeometryBasisTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRSightGeometryBasisTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.sight_geometry_basis COMMAND WorldAtWarVRSightGeometryBasisTest)
+    add_executable(WorldAtWarVRSightGeometryRootAlignmentTest sight_geometry_basis.cpp sight_geometry_root_alignment_test.cpp weapon_ballistics_logic.cpp)
+    target_link_libraries(WorldAtWarVRSightGeometryRootAlignmentTest PRIVATE wawvr_project_options)
+    target_include_directories(WorldAtWarVRSightGeometryRootAlignmentTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.sight_geometry_root_alignment COMMAND WorldAtWarVRSightGeometryRootAlignmentTest)
+    add_executable(WorldAtWarVRAllWeaponSightGeometryBankTest all_weapon_sight_geometry_bank.cpp sight_geometry_basis.cpp all_weapon_sight_geometry_bank_test.cpp weapon_ballistics_logic.cpp)
+    target_compile_features(WorldAtWarVRAllWeaponSightGeometryBankTest PRIVATE cxx_std_20)
+    target_include_directories(WorldAtWarVRAllWeaponSightGeometryBankTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.all_weapon_sight_geometry_bank COMMAND WorldAtWarVRAllWeaponSightGeometryBankTest)
+    add_executable(WorldAtWarVRSightGeometryShotAuditTest sight_geometry_shot_audit.cpp sight_geometry_shot_audit_test.cpp)
+    target_compile_features(WorldAtWarVRSightGeometryShotAuditTest PRIVATE cxx_std_20)
+    target_include_directories(WorldAtWarVRSightGeometryShotAuditTest PRIVATE "${PROJECT_SOURCE_DIR}/src/xr")
+    add_test(NAME mod.sight_geometry_shot_audit COMMAND WorldAtWarVRSightGeometryShotAuditTest)
+    add_executable(WorldAtWarVRFiniteAimGrantLogicTest finite_aim_grant_logic_test.cpp)
+    target_compile_features(WorldAtWarVRFiniteAimGrantLogicTest PRIVATE cxx_std_20)
+    add_test(NAME mod.finite_aim_grant_logic COMMAND WorldAtWarVRFiniteAimGrantLogicTest)
     add_executable(WorldAtWarVRServerImpactInstallDiagnosticTest server_impact_install_diagnostic_test.cpp)
     target_link_libraries(WorldAtWarVRServerImpactInstallDiagnosticTest PRIVATE wawvr_project_options)
     add_test(NAME mod.server_impact_install_diagnostic COMMAND WorldAtWarVRServerImpactInstallDiagnosticTest)
